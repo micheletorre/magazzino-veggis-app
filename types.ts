@@ -1,21 +1,9 @@
-export interface Product {
-  id: number;
+export interface Prodotto {
+  id?: string;
   name: string;
-  stock: number;
-  unit_price: number;
-  last_charge_date: string | null;
-  created_at: string;
-}
-
-export interface Movement {
-  id: number;
-  product_id: number;
-  product_name?: string;
-  type: 'CARICO' | 'SCARICO';
   quantity: number;
+  category?: string;
   supplier?: string;
-  requester?: string;
-  destination?: string;
-  movement_date: string;
-  created_at: string;
+  unit_price?: number;
+  [key: string]: any; // Per accettare eventuali altre proprietà dinamiche
 }
