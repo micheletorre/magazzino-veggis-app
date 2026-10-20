@@ -8,13 +8,12 @@ export interface Prodotto {
   [key: string]: any;
 }
 
-// Alias per compatibilità con l'import in inglese in page.tsx
 export type Product = Prodotto;
 
 export interface Movement {
   id?: string;
   product_id?: string;
-  type: 'in' | 'out';
+  type: 'in' | 'out' | 'CARICO' | 'SCARICO' | string;
   quantity: number;
   date?: string;
   [key: string]: any;
