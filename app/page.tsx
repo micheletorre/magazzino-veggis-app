@@ -83,8 +83,24 @@ export default function Home() {
   // Modale Conferma Eliminazione
   const [productToDelete, setProductToDelete] = useState<Product | null>(null);
 
+  // Evidenziazione e auto-scroll al prodotto modificato
+  const [highlightedProductId, setHighlightedProductId] = useState<string | number | null>(null);
+
   // Stato salvataggio in corso
   const [isSaving, setIsSaving] = useState(false);
+
+  const scrollToProduct = (productId: string | number) => {
+    setHighlightedProductId(productId);
+    setTimeout(() => {
+      const el = document.getElementById(`product-row-${productId}`);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }, 200);
+    setTimeout(() => {
+      setHighlightedProductId(null);
+    }, 3500);
+  };
 
   const addToast = (type: 'success' | 'error' | 'info', title: string, message?: string) => {
     const id = Math.random().toString(36).substring(2, 9);
@@ -214,7 +230,6 @@ export default function Home() {
         quantity: item.quantity,
         movement_date: caricoDate,
         supplier: fullSupplierName || null,
-        unit_price: item.unitPrice,
       }));
 
       const { error: movError } = await supabase.from('movements').insert(movementsToInsert);
@@ -333,7 +348,6 @@ export default function Home() {
         movement_date: scaricoDate,
         requester: scaricoRequester.trim() || null,
         destination: scaricoDestination.trim() || null,
-        unit_price: item.unitPrice,
       }));
 
       const { error: movError } = await supabase.from('movements').insert(movementsToInsert);
@@ -383,6 +397,7 @@ export default function Home() {
 
   const handleSaveWebPrice = async () => {
     if (!webPriceProduct) return;
+    const targetId = webPriceProduct.id;
     const newPrice = parseFloat(inputWebPrice.replace(',', '.'));
 
     if (isNaN(newPrice) || newPrice < 0) {
@@ -394,7 +409,7 @@ export default function Home() {
     const { error } = await supabase
       .from('products')
       .update({ unit_price: newPrice })
-      .eq('id', webPriceProduct.id);
+      .eq('id', targetId);
     setIsSaving(false);
 
     if (error) {
@@ -403,18 +418,22 @@ export default function Home() {
       addToast('success', 'Prezzo aggiornato', `${webPriceProduct.name}: nuovo prezzo ${formatEuro(newPrice)}`);
       setWebPriceProduct(null);
       setInputWebPrice('');
-      fetchData();
+      await fetchData();
+      if (targetId) {
+        scrollToProduct(targetId);
+      }
     }
   };
 
   const handleSaveEditProduct = async () => {
     if (!editingProduct) return;
+    const targetId = editingProduct.id;
 
     setIsSaving(true);
     const { error } = await supabase
       .from('products')
       .update({ stock: editStock, unit_price: editPrice, supplier: editSupplier })
-      .eq('id', editingProduct.id);
+      .eq('id', targetId);
     setIsSaving(false);
 
     if (error) {
@@ -422,7 +441,10 @@ export default function Home() {
     } else {
       addToast('success', 'Prodotto aggiornato', `Dati di "${editingProduct.name}" salvati con successo.`);
       setEditingProduct(null);
-      fetchData();
+      await fetchData();
+      if (targetId) {
+        scrollToProduct(targetId);
+      }
     }
   };
 
@@ -925,9 +947,16 @@ export default function Home() {
 
                       return (
                         <tr
+                          id={`product-row-${p.id}`}
                           key={p.id}
-                          className={`hover:bg-slate-50/80 transition-colors ${
-                            isZero ? 'bg-rose-50/25' : isLow ? 'bg-amber-50/20' : ''
+                          className={`transition-all duration-500 ${
+                            highlightedProductId === p.id
+                              ? 'bg-blue-100/90 ring-2 ring-blue-500 ring-inset shadow-md'
+                              : isZero
+                              ? 'bg-rose-50/25 hover:bg-slate-50/80'
+                              : isLow
+                              ? 'bg-amber-50/20 hover:bg-slate-50/80'
+                              : 'hover:bg-slate-50/80'
                           }`}
                         >
                           <td className="py-3 px-5 font-medium text-slate-900">
