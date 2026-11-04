@@ -24,6 +24,15 @@ interface Toast {
   message?: string;
 }
 
+interface BatchItem {
+  tempId: string;
+  productId: string;
+  productName: string;
+  quantity: number;
+  unitPrice: number;
+  currentStock: number;
+}
+
 export default function Home() {
   const [products, setProducts] = useState<Product[]>([]);
   const [movements, setMovements] = useState<Movement[]>([]);
@@ -37,15 +46,22 @@ export default function Home() {
   // Notifiche Toast
   const [toasts, setToasts] = useState<Toast[]>([]);
 
-  // Modale Carico / Scarico
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [modalType, setModalType] = useState<'CARICO' | 'SCARICO'>('CARICO');
-  const [selectedProductId, setSelectedProductId] = useState('');
-  const [quantity, setQuantity] = useState(1);
-  const [movementDate, setMovementDate] = useState('');
-  const [requester, setRequester] = useState('');
-  const [destination, setDestination] = useState('');
-  const [supplier, setSupplier] = useState('');
+  // ================= BATCH CARICO (Ricezione DDT a ciclo continuo) =================
+  const [caricoDate, setCaricoDate] = useState('');
+  const [caricoSupplier, setCaricoSupplier] = useState('');
+  const [caricoReference, setCaricoReference] = useState(''); // es. n. DDT
+  const [caricoSelectedProductId, setCaricoSelectedProductId] = useState('');
+  const [caricoQuantity, setCaricoQuantity] = useState(1);
+  const [caricoUnitPrice, setCaricoUnitPrice] = useState<number>(0);
+  const [caricoItems, setCaricoItems] = useState<BatchItem[]>([]);
+
+  // ================= BATCH SCARICO (Uscita Merce a ciclo continuo) =================
+  const [scaricoDate, setScaricoDate] = useState('');
+  const [scaricoRequester, setScaricoRequester] = useState('');
+  const [scaricoDestination, setScaricoDestination] = useState('');
+  const [scaricoSelectedProductId, setScaricoSelectedProductId] = useState('');
+  const [scaricoQuantity, setScaricoQuantity] = useState(1);
+  const [scaricoItems, setScaricoItems] = useState<BatchItem[]>([]);
 
   // Modale Nuovo Prodotto
   const [isNewProductModalOpen, setIsNewProductModalOpen] = useState(false);
@@ -83,7 +99,9 @@ export default function Home() {
   };
 
   useEffect(() => {
-    setMovementDate(new Date().toISOString().split('T')[0]);
+    const today = new Date().toISOString().split('T')[0];
+    setCaricoDate(today);
+    setScaricoDate(today);
     fetchData();
   }, []);
 
@@ -91,7 +109,6 @@ export default function Home() {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        setIsModalOpen(false);
         setIsNewProductModalOpen(false);
         setWebPriceProduct(null);
         setEditingProduct(null);
@@ -121,6 +138,240 @@ export default function Home() {
     }
   }
 
+  // Pre-carica prezzo quando si seleziona un prodotto per il Carico
+  const handleCaricoProductSelect = (prodId: string) => {
+    setCaricoSelectedProductId(prodId);
+    const prod = products.find((p) => p.id === prodId);
+    if (prod) {
+      setCaricoUnitPrice(Number(prod.unit_price) || 0);
+      if (!caricoSupplier && prod.supplier) {
+        setCaricoSupplier(prod.supplier);
+      }
+    }
+  };
+
+  // Aggiunge un riga alla lista provvisoria del DDT Carico
+  const handleAddCaricoItem = () => {
+    if (!caricoSelectedProductId) {
+      addToast('error', 'Seleziona un articolo', 'Scegli un prodotto prima di aggiungerlo al DDT');
+      return;
+    }
+    if (caricoQuantity <= 0) {
+      addToast('error', 'Quantità non valida', 'Inserisci una quantità di almeno 1 pezzo');
+      return;
+    }
+
+    const prod = products.find((p) => p.id === caricoSelectedProductId);
+    if (!prod) return;
+
+    // Se il prodotto è già in lista, aggiorniamo la quantità
+    const existingIndex = caricoItems.findIndex((item) => item.productId === prod.id);
+    if (existingIndex >= 0) {
+      const updated = [...caricoItems];
+      updated[existingIndex].quantity += caricoQuantity;
+      updated[existingIndex].unitPrice = caricoUnitPrice;
+      setCaricoItems(updated);
+      addToast('info', 'Quantità aggiornata', `Aggiunti altri ${caricoQuantity} pz a "${prod.name}" (Totale nel DDT: ${updated[existingIndex].quantity} pz)`);
+    } else {
+      const newItem: BatchItem = {
+        tempId: Math.random().toString(36).substring(2, 9),
+        productId: prod.id!,
+        productName: prod.name,
+        quantity: caricoQuantity,
+        unitPrice: caricoUnitPrice,
+        currentStock: prod.stock || 0,
+      };
+      setCaricoItems((prev) => [...prev, newItem]);
+    }
+
+    // Reset selezione per inserire velocemente il prossimo articolo
+    setCaricoSelectedProductId('');
+    setCaricoQuantity(1);
+    setCaricoUnitPrice(0);
+  };
+
+  const handleRemoveCaricoItem = (tempId: string) => {
+    setCaricoItems((prev) => prev.filter((i) => i.tempId !== tempId));
+  };
+
+  // Salva l'intero DDT in blocco su Supabase
+  const handleConcludeCarico = async () => {
+    if (caricoItems.length === 0) {
+      addToast('error', 'Nessun prodotto', 'Aggiungi almeno un articolo al DDT prima di concludere');
+      return;
+    }
+
+    setIsSaving(true);
+    try {
+      const fullSupplierName = caricoReference.trim()
+        ? `${caricoSupplier.trim()} (DDT: ${caricoReference.trim()})`
+        : caricoSupplier.trim();
+
+      // 1. Prepara i movimenti da inserire
+      const movementsToInsert = caricoItems.map((item) => ({
+        product_id: item.productId,
+        type: 'CARICO',
+        quantity: item.quantity,
+        movement_date: caricoDate,
+        supplier: fullSupplierName || null,
+        unit_price: item.unitPrice,
+      }));
+
+      const { error: movError } = await supabase.from('movements').insert(movementsToInsert);
+      if (movError) throw movError;
+
+      // 2. Aggiorna giacenza, ultimo carico e fornitore di ogni prodotto
+      for (const item of caricoItems) {
+        const prod = products.find((p) => p.id === item.productId);
+        const currentStock = prod ? prod.stock : item.currentStock;
+        const newStock = currentStock + item.quantity;
+
+        const updatePayload: Partial<Product> = {
+          stock: newStock,
+          last_charge_date: caricoDate,
+          unit_price: item.unitPrice > 0 ? item.unitPrice : prod?.unit_price,
+        };
+        if (caricoSupplier.trim()) {
+          updatePayload.supplier = caricoSupplier.trim();
+        }
+
+        const { error: prodError } = await supabase
+          .from('products')
+          .update(updatePayload)
+          .eq('id', item.productId);
+
+        if (prodError) {
+          console.error(`Errore aggiornamento prodotto ${item.productId}:`, prodError);
+        }
+      }
+
+      addToast(
+        'success',
+        'Carico DDT concluso con successo!',
+        `Registrati ${caricoItems.length} articoli per un totale di ${caricoItems.reduce((acc, i) => acc + i.quantity, 0)} pezzi.`
+      );
+
+      // Reset stato sessione DDT
+      setCaricoItems([]);
+      setCaricoReference('');
+      fetchData();
+    } catch (err: any) {
+      console.error(err);
+      addToast('error', 'Errore durante la registrazione del carico', err.message);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  // ================= SCARICO MERCE (BATCH) =================
+  const handleAddScaricoItem = () => {
+    if (!scaricoSelectedProductId) {
+      addToast('error', 'Seleziona un articolo', 'Scegli un prodotto prima di aggiungerlo alla lista');
+      return;
+    }
+    if (scaricoQuantity <= 0) {
+      addToast('error', 'Quantità non valida', 'Inserisci una quantità di almeno 1 pezzo');
+      return;
+    }
+
+    const prod = products.find((p) => p.id === scaricoSelectedProductId);
+    if (!prod) return;
+
+    // Calcola quanto di questo articolo è già in coda di scarico
+    const alreadyQueued = scaricoItems
+      .filter((i) => i.productId === prod.id)
+      .reduce((sum, i) => sum + i.quantity, 0);
+
+    const totalRequested = alreadyQueued + scaricoQuantity;
+    if (totalRequested > prod.stock) {
+      addToast(
+        'error',
+        'Giacenza insufficiente',
+        `Disponibili a magazzino: ${prod.stock} pz. Stai tentando di scaricare in totale ${totalRequested} pz.`
+      );
+      return;
+    }
+
+    const existingIndex = scaricoItems.findIndex((item) => item.productId === prod.id);
+    if (existingIndex >= 0) {
+      const updated = [...scaricoItems];
+      updated[existingIndex].quantity += scaricoQuantity;
+      setScaricoItems(updated);
+      addToast('info', 'Quantità aggiornata', `Totale da scaricare per "${prod.name}": ${updated[existingIndex].quantity} pz`);
+    } else {
+      const newItem: BatchItem = {
+        tempId: Math.random().toString(36).substring(2, 9),
+        productId: prod.id!,
+        productName: prod.name,
+        quantity: scaricoQuantity,
+        unitPrice: prod.unit_price || 0,
+        currentStock: prod.stock || 0,
+      };
+      setScaricoItems((prev) => [...prev, newItem]);
+    }
+
+    setScaricoSelectedProductId('');
+    setScaricoQuantity(1);
+  };
+
+  const handleRemoveScaricoItem = (tempId: string) => {
+    setScaricoItems((prev) => prev.filter((i) => i.tempId !== tempId));
+  };
+
+  const handleConcludeScarico = async () => {
+    if (scaricoItems.length === 0) {
+      addToast('error', 'Nessun prodotto', 'Aggiungi almeno un articolo prima di concludere lo scarico');
+      return;
+    }
+
+    setIsSaving(true);
+    try {
+      const movementsToInsert = scaricoItems.map((item) => ({
+        product_id: item.productId,
+        type: 'SCARICO',
+        quantity: item.quantity,
+        movement_date: scaricoDate,
+        requester: scaricoRequester.trim() || null,
+        destination: scaricoDestination.trim() || null,
+        unit_price: item.unitPrice,
+      }));
+
+      const { error: movError } = await supabase.from('movements').insert(movementsToInsert);
+      if (movError) throw movError;
+
+      // Aggiorna giacenze
+      for (const item of scaricoItems) {
+        const prod = products.find((p) => p.id === item.productId);
+        const currentStock = prod ? prod.stock : item.currentStock;
+        const newStock = Math.max(0, currentStock - item.quantity);
+
+        const { error: prodError } = await supabase
+          .from('products')
+          .update({ stock: newStock })
+          .eq('id', item.productId);
+
+        if (prodError) {
+          console.error(`Errore aggiornamento stock prodotto ${item.productId}:`, prodError);
+        }
+      }
+
+      addToast(
+        'success',
+        'Scarico merce concluso con successo!',
+        `Scaricati ${scaricoItems.length} articoli per un totale di ${scaricoItems.reduce((acc, i) => acc + i.quantity, 0)} pezzi.`
+      );
+
+      setScaricoItems([]);
+      fetchData();
+    } catch (err: any) {
+      console.error(err);
+      addToast('error', 'Errore durante la registrazione dello scarico', err.message);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  // ================= MODIFICA E PREZZO WEB =================
   const handleWebPriceSearch = (product: Product) => {
     const cleanedName = product.name.replace(/\(.*?\)/g, '').trim();
     const searchQuery = encodeURIComponent(`prezzo ${cleanedName}`);
@@ -225,87 +476,6 @@ export default function Home() {
     }
   };
 
-  const handleSaveMovement = async () => {
-    if (!selectedProductId) {
-      addToast('error', 'Selezione mancante', 'Seleziona un prodotto dalla lista');
-      return;
-    }
-
-    if (quantity <= 0) {
-      addToast('error', 'Quantità non valida', 'La quantità deve essere maggiore di zero');
-      return;
-    }
-
-    const targetProduct = products.find((p) => p.id === selectedProductId);
-    if (!targetProduct) return;
-
-    if (modalType === 'SCARICO' && targetProduct.stock < quantity) {
-      addToast(
-        'error',
-        'Giacenza insufficiente',
-        `Disponibili: ${targetProduct.stock} unità. Impossibile scaricare ${quantity} unità.`
-      );
-      return;
-    }
-
-    const newStock = modalType === 'CARICO'
-      ? targetProduct.stock + quantity
-      : targetProduct.stock - quantity;
-
-    setIsSaving(true);
-    const { error: movError } = await supabase.from('movements').insert([
-      {
-        product_id: selectedProductId,
-        type: modalType,
-        quantity: quantity,
-        movement_date: movementDate,
-        requester: modalType === 'SCARICO' ? requester.trim() : null,
-        destination: modalType === 'SCARICO' ? destination.trim() : null,
-        supplier: modalType === 'CARICO' ? supplier.trim() : null,
-        unit_price: targetProduct.unit_price || 0,
-      },
-    ]);
-
-    if (movError) {
-      setIsSaving(false);
-      addToast('error', 'Errore salvataggio movimento', movError.message);
-      return;
-    }
-
-    const updateData: Partial<Product> = { stock: newStock };
-    if (modalType === 'CARICO') {
-      updateData.last_charge_date = movementDate;
-      if (supplier.trim()) {
-        updateData.supplier = supplier.trim();
-      }
-    }
-
-    const { error: prodError } = await supabase
-      .from('products')
-      .update(updateData)
-      .eq('id', selectedProductId);
-    setIsSaving(false);
-
-    if (prodError) {
-      addToast('error', 'Errore aggiornamento giacenza', prodError.message);
-      return;
-    }
-
-    addToast(
-      'success',
-      `Movimento registrato: ${modalType === 'CARICO' ? 'Carico' : 'Scarico'}`,
-      `${targetProduct.name} — Quantità: ${modalType === 'CARICO' ? '+' : '-'}${quantity} (Nuova giacenza: ${newStock})`
-    );
-
-    setIsModalOpen(false);
-    setSelectedProductId('');
-    setQuantity(1);
-    setRequester('');
-    setDestination('');
-    setSupplier('');
-    fetchData();
-  };
-
   // Statistiche e calcoli memoizzati
   const totalValue = useMemo(() => {
     return products.reduce((acc, p) => acc + (p.stock || 0) * (p.unit_price || 0), 0);
@@ -336,6 +506,15 @@ export default function Home() {
       return true;
     });
   }, [products, search, stockFilter]);
+
+  // Lista fornitori univoci per suggerimenti rapidi
+  const existingSuppliers = useMemo(() => {
+    const set = new Set<string>();
+    products.forEach((p) => {
+      if (p.supplier && p.supplier.trim()) set.add(p.supplier.trim());
+    });
+    return Array.from(set).sort();
+  }, [products]);
 
   return (
     <div className="min-h-screen bg-slate-50/70 text-slate-800 antialiased pb-20">
@@ -402,29 +581,47 @@ export default function Home() {
                   Online
                 </span>
               </div>
-              <p className="text-xs text-slate-500">Gestione scorte, carichi e scarichi prodotti</p>
+              <p className="text-xs text-slate-500">Gestione scorte, carichi da DDT e prelievi di magazzino</p>
             </div>
           </div>
 
           {/* Pulsanti Azione Rapida in Header */}
           <div className="flex items-center gap-2.5">
             <button
-              onClick={() => { setModalType('CARICO'); setIsModalOpen(true); }}
-              className="inline-flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-lg bg-emerald-50 text-emerald-700 hover:bg-emerald-100/80 border border-emerald-200/80 transition-all cursor-pointer shadow-xs active:scale-98"
+              onClick={() => setActiveTab('carico')}
+              className={`inline-flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-lg border transition-all cursor-pointer shadow-xs active:scale-98 ${
+                activeTab === 'carico'
+                  ? 'bg-emerald-600 text-white border-emerald-600'
+                  : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100/80 border-emerald-200/80'
+              }`}
             >
-              <svg className="w-4 h-4 text-emerald-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
               </svg>
-              Carico Merce
+              Ricevi DDT / Carico
+              {caricoItems.length > 0 && (
+                <span className="ml-1 px-1.5 py-0.2 rounded-full text-[10px] bg-emerald-800 text-white">
+                  {caricoItems.length}
+                </span>
+              )}
             </button>
             <button
-              onClick={() => { setModalType('SCARICO'); setIsModalOpen(true); }}
-              className="inline-flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-lg bg-rose-50 text-rose-700 hover:bg-rose-100/80 border border-rose-200/80 transition-all cursor-pointer shadow-xs active:scale-98"
+              onClick={() => setActiveTab('scarico')}
+              className={`inline-flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-lg border transition-all cursor-pointer shadow-xs active:scale-98 ${
+                activeTab === 'scarico'
+                  ? 'bg-rose-600 text-white border-rose-600'
+                  : 'bg-rose-50 text-rose-700 hover:bg-rose-100/80 border-rose-200/80'
+              }`}
             >
-              <svg className="w-4 h-4 text-rose-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M20 12H4" />
               </svg>
               Scarico Merce
+              {scaricoItems.length > 0 && (
+                <span className="ml-1 px-1.5 py-0.2 rounded-full text-[10px] bg-rose-800 text-white">
+                  {scaricoItems.length}
+                </span>
+              )}
             </button>
             <button
               onClick={() => setIsNewProductModalOpen(true)}
@@ -539,12 +736,18 @@ export default function Home() {
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M7 16l-4-4m0 0l4-4m-4 4h18" />
               </svg>
-              Registro Carichi
-              <span className={`px-2 py-0.5 rounded-full text-[11px] ${
-                activeTab === 'carico' ? 'bg-emerald-700 text-white' : 'bg-slate-200/80 text-slate-700'
-              }`}>
-                {movements.filter((m) => m.type === 'CARICO').length}
-              </span>
+              Carico Merce (DDT)
+              {caricoItems.length > 0 ? (
+                <span className="px-2 py-0.5 rounded-full text-[11px] bg-amber-500 text-white font-bold animate-pulse">
+                  {caricoItems.length} in corso
+                </span>
+              ) : (
+                <span className={`px-2 py-0.5 rounded-full text-[11px] ${
+                  activeTab === 'carico' ? 'bg-emerald-700 text-white' : 'bg-slate-200/80 text-slate-700'
+                }`}>
+                  {movements.filter((m) => m.type === 'CARICO').length}
+                </span>
+              )}
             </button>
 
             <button
@@ -558,12 +761,18 @@ export default function Home() {
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M17 8l4 4m0 0l-4 4m4-4H3" />
               </svg>
-              Registro Scarichi
-              <span className={`px-2 py-0.5 rounded-full text-[11px] ${
-                activeTab === 'scarico' ? 'bg-rose-700 text-white' : 'bg-slate-200/80 text-slate-700'
-              }`}>
-                {movements.filter((m) => m.type === 'SCARICO').length}
-              </span>
+              Scarico Merce
+              {scaricoItems.length > 0 ? (
+                <span className="px-2 py-0.5 rounded-full text-[11px] bg-amber-500 text-white font-bold animate-pulse">
+                  {scaricoItems.length} in corso
+                </span>
+              ) : (
+                <span className={`px-2 py-0.5 rounded-full text-[11px] ${
+                  activeTab === 'scarico' ? 'bg-rose-700 text-white' : 'bg-slate-200/80 text-slate-700'
+                }`}>
+                  {movements.filter((m) => m.type === 'SCARICO').length}
+                </span>
+              )}
             </button>
           </div>
 
@@ -812,149 +1021,564 @@ export default function Home() {
           </div>
         )}
 
-        {/* ===================== TAB 2: REGISTRO CARICHI ===================== */}
+        {/* ===================== TAB 2: REGISTRO CARICHI (RICEZIONE DDT CONTINUO) ===================== */}
         {activeTab === 'carico' && (
-          <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
-            <div className="p-4 border-b border-slate-200 bg-emerald-50/40 flex items-center justify-between">
-              <div>
-                <h3 className="text-sm font-bold text-slate-900">Storico Movimenti di Carico</h3>
-                <p className="text-xs text-slate-500 mt-0.5">Tutte le entrate merce registrate a magazzino</p>
+          <div className="space-y-6">
+            {/* SEZIONE COMPILAZIONE DDT (SENZA POPUP) */}
+            <div className="bg-white rounded-xl border border-emerald-200 shadow-sm overflow-hidden ring-1 ring-emerald-500/10">
+              <div className="p-4 bg-gradient-to-r from-emerald-500 to-teal-600 text-white flex items-center justify-between">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-lg bg-white/20 flex items-center justify-center">
+                    <svg className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-bold tracking-tight">Inserimento Merce da DDT Fornitore</h3>
+                    <p className="text-xs text-emerald-100">Compila l&apos;intestazione del DDT e aggiungi tutti i prodotti della bolla in sequenza continua</p>
+                  </div>
+                </div>
+
+                {caricoItems.length > 0 && (
+                  <span className="px-3 py-1 rounded-full text-xs font-bold bg-white text-emerald-800 shadow-xs">
+                    {caricoItems.length} articoli pronti da caricare
+                  </span>
+                )}
               </div>
-              <button
-                onClick={() => { setModalType('CARICO'); setIsModalOpen(true); }}
-                className="inline-flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 transition-all cursor-pointer shadow-xs"
-              >
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
-                </svg>
-                Registra Nuovo Carico
-              </button>
+
+              <div className="p-5">
+                {/* 1. Intestazione DDT (inserita una sola volta) */}
+                <div className="grid grid-cols-3 gap-4 pb-4 mb-4 border-b border-slate-200">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">Fornitore / Mittente DDT *</label>
+                    <input
+                      type="text"
+                      list="suppliers-list"
+                      placeholder="Es. CWS-BOCO, ALMA, MONDO PULITO..."
+                      value={caricoSupplier}
+                      onChange={(e) => setCaricoSupplier(e.target.value)}
+                      className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-lg focus:outline-hidden focus:bg-white focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 font-semibold text-slate-900"
+                    />
+                    <datalist id="suppliers-list">
+                      {existingSuppliers.map((s) => (
+                        <option key={s} value={s} />
+                      ))}
+                    </datalist>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">Riferimento / N. DDT (Opzionale)</label>
+                    <input
+                      type="text"
+                      placeholder="Es. DDT 458/26"
+                      value={caricoReference}
+                      onChange={(e) => setCaricoReference(e.target.value)}
+                      className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-lg focus:outline-hidden focus:bg-white focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 text-slate-900"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">Data Arrivo / Bolla *</label>
+                    <input
+                      type="date"
+                      value={caricoDate}
+                      onChange={(e) => setCaricoDate(e.target.value)}
+                      className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-lg focus:outline-hidden focus:bg-white focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 text-slate-900"
+                    />
+                  </div>
+                </div>
+
+                {/* 2. Riquadro aggiunta rapida articoli */}
+                <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 mb-4">
+                  <p className="text-xs font-bold text-slate-700 mb-2.5 flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                    Aggiungi riga prodotto dal DDT:
+                  </p>
+
+                  <div className="grid grid-cols-12 gap-3 items-end">
+                    <div className="col-span-6">
+                      <label className="block text-[11px] font-semibold text-slate-600 mb-1">Seleziona Articolo</label>
+                      <select
+                        value={caricoSelectedProductId}
+                        onChange={(e) => handleCaricoProductSelect(e.target.value)}
+                        className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 font-medium"
+                      >
+                        <option value="">-- Seleziona un articolo dalla bolla --</option>
+                        {products.map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.name} (Giacenza attuale: {p.stock} pz)
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="col-span-2">
+                      <label className="block text-[11px] font-semibold text-slate-600 mb-1">Quantità ricevuta</label>
+                      <input
+                        type="number"
+                        min="1"
+                        value={caricoQuantity}
+                        onChange={(e) => setCaricoQuantity(parseInt(e.target.value) || 1)}
+                        onKeyDown={(e) => { if (e.key === 'Enter') handleAddCaricoItem(); }}
+                        className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 font-bold text-center"
+                      />
+                    </div>
+
+                    <div className="col-span-2">
+                      <label className="block text-[11px] font-semibold text-slate-600 mb-1">Prezzo Unit. (€)</label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        value={caricoUnitPrice}
+                        onChange={(e) => setCaricoUnitPrice(parseFloat(e.target.value) || 0)}
+                        onKeyDown={(e) => { if (e.key === 'Enter') handleAddCaricoItem(); }}
+                        className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 text-right"
+                      />
+                    </div>
+
+                    <div className="col-span-2">
+                      <button
+                        type="button"
+                        onClick={handleAddCaricoItem}
+                        className="w-full py-2 px-3 text-xs font-bold text-emerald-700 bg-emerald-100/80 hover:bg-emerald-200 border border-emerald-300/80 rounded-lg transition-all cursor-pointer flex items-center justify-center gap-1.5 active:scale-98 shadow-xs"
+                      >
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+                        </svg>
+                        Inserisci riga
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 3. Elenco degli articoli inseriti per questo DDT */}
+                {caricoItems.length > 0 ? (
+                  <div className="border border-slate-200 rounded-xl overflow-hidden mb-5">
+                    <div className="bg-slate-100/80 px-4 py-2 border-b border-slate-200 flex justify-between items-center text-xs font-semibold text-slate-700">
+                      <span>Articoli inseriti nel DDT in preparazione ({caricoItems.length})</span>
+                      <span>
+                        Totale Pezzi: <strong className="text-emerald-700">{caricoItems.reduce((acc, i) => acc + i.quantity, 0)}</strong> | 
+                        Valore DDT: <strong className="text-emerald-700">{formatEuro(caricoItems.reduce((acc, i) => acc + i.quantity * i.unitPrice, 0))}</strong>
+                      </span>
+                    </div>
+
+                    <table className="w-full text-left text-xs divide-y divide-slate-100">
+                      <thead className="bg-slate-50 text-[11px] font-semibold text-slate-500 uppercase">
+                        <tr>
+                          <th className="py-2.5 px-4">Prodotto</th>
+                          <th className="py-2.5 px-3 text-center">Giacenza Prima</th>
+                          <th className="py-2.5 px-3 text-center">Quantità Ricevuta</th>
+                          <th className="py-2.5 px-3 text-center">Nuova Giacenza</th>
+                          <th className="py-2.5 px-3 text-right">Prezzo Unit.</th>
+                          <th className="py-2.5 px-3 text-right">Totale</th>
+                          <th className="py-2.5 px-3 text-center">Rimuovi</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 bg-white">
+                        {caricoItems.map((item) => (
+                          <tr key={item.tempId} className="hover:bg-slate-50/60">
+                            <td className="py-2.5 px-4 font-semibold text-slate-900">{item.productName}</td>
+                            <td className="py-2.5 px-3 text-center text-slate-500">{item.currentStock} pz</td>
+                            <td className="py-2.5 px-3 text-center font-bold text-emerald-600 bg-emerald-50/50">+{item.quantity}</td>
+                            <td className="py-2.5 px-3 text-center font-bold text-slate-800">{item.currentStock + item.quantity} pz</td>
+                            <td className="py-2.5 px-3 text-right text-slate-600">{formatEuro(item.unitPrice)}</td>
+                            <td className="py-2.5 px-3 text-right font-semibold text-slate-900">{formatEuro(item.quantity * item.unitPrice)}</td>
+                            <td className="py-2.5 px-3 text-center">
+                              <button
+                                onClick={() => handleRemoveCaricoItem(item.tempId)}
+                                className="text-rose-500 hover:text-rose-700 p-1 rounded-md hover:bg-rose-50"
+                                title="Rimuovi questa riga"
+                              >
+                                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                  <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                </svg>
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <div className="py-6 text-center text-slate-400 text-xs border border-dashed border-slate-200 rounded-xl mb-4 bg-slate-50/30">
+                    Nessun prodotto inserito nel DDT corrente. Seleziona l&apos;articolo in alto e clicca su &ldquo;Inserisci riga&rdquo;.
+                  </div>
+                )}
+
+                {/* 4. Pulsanti di chiusura DDT */}
+                <div className="flex items-center justify-between pt-2">
+                  <button
+                    type="button"
+                    disabled={caricoItems.length === 0}
+                    onClick={() => {
+                      if (window.confirm('Vuoi annullare e svuotare le righe di questo DDT?')) {
+                        setCaricoItems([]);
+                        setCaricoReference('');
+                      }
+                    }}
+                    className={`px-4 py-2 text-xs font-semibold rounded-lg border transition-all ${
+                      caricoItems.length === 0
+                        ? 'opacity-40 cursor-not-allowed text-slate-400 border-slate-200'
+                        : 'text-slate-600 hover:text-rose-600 hover:bg-rose-50 border-slate-200 cursor-pointer'
+                    }`}
+                  >
+                    Svuota lista DDT
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={isSaving || caricoItems.length === 0}
+                    onClick={handleConcludeCarico}
+                    className={`inline-flex items-center gap-2 px-6 py-2.5 text-xs font-bold rounded-lg shadow-sm transition-all cursor-pointer ${
+                      caricoItems.length === 0
+                        ? 'bg-slate-200 text-slate-400 cursor-not-allowed shadow-none'
+                        : 'bg-emerald-600 text-white hover:bg-emerald-700 active:scale-98 shadow-emerald-500/20'
+                    }`}
+                  >
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                    </svg>
+                    {isSaving
+                      ? 'Salvataggio carico in corso...'
+                      : `Concludi Carico DDT (${caricoItems.length} ${caricoItems.length === 1 ? 'articolo' : 'articoli'})`}
+                  </button>
+                </div>
+              </div>
             </div>
 
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse">
-                <thead>
-                  <tr className="bg-slate-50/80 border-b border-slate-200 text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
-                    <th className="py-3 px-5">Data Arrivo</th>
-                    <th className="py-3 px-5">Prodotto</th>
-                    <th className="py-3 px-4 text-center">Quantità Ricevuta</th>
-                    <th className="py-3 px-4 text-right">Prezzo Unitario</th>
-                    <th className="py-3 px-4 text-right">Totale Entrata</th>
-                    <th className="py-3 px-5">Fornitore</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 text-xs">
-                  {movements.filter((m) => m.type === 'CARICO').length === 0 ? (
-                    <tr>
-                      <td colSpan={6} className="py-10 text-center text-slate-400">
-                        Nessun carico merce registrato nello storico.
-                      </td>
+            {/* STORICO CARICHI PASSATI */}
+            <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
+              <div className="p-4 border-b border-slate-200 bg-slate-50/60 flex items-center justify-between">
+                <div>
+                  <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700">Registro Storico Carichi Merce</h3>
+                  <p className="text-xs text-slate-500 mt-0.5">Elenco di tutte le bolle ed entrate merce registrate in passato</p>
+                </div>
+                <span className="text-xs text-slate-500">
+                  Totale carichi registrati: <strong>{movements.filter((m) => m.type === 'CARICO').length}</strong>
+                </span>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="bg-slate-50/80 border-b border-slate-200 text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+                      <th className="py-3 px-5">Data Arrivo</th>
+                      <th className="py-3 px-5">Prodotto</th>
+                      <th className="py-3 px-4 text-center">Quantità Ricevuta</th>
+                      <th className="py-3 px-4 text-right">Prezzo Unitario</th>
+                      <th className="py-3 px-4 text-right">Totale Entrata</th>
+                      <th className="py-3 px-5">Fornitore / DDT</th>
                     </tr>
-                  ) : (
-                    movements.filter((m) => m.type === 'CARICO').map((m) => {
-                      const prod = products.find((p) => p.id === m.product_id);
-                      const unitP = m.unit_price || 0;
-                      return (
-                        <tr key={m.id} className="hover:bg-slate-50/80 transition-colors">
-                          <td className="py-3 px-5 font-medium text-slate-600">
-                            {formatDateToItalian(m.movement_date)}
-                          </td>
-                          <td className="py-3 px-5 font-semibold text-slate-900">
-                            {prod?.name || 'Prodotto eliminato o non trovato'}
-                          </td>
-                          <td className="py-3 px-4 text-center">
-                            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                              +{m.quantity}
-                            </span>
-                          </td>
-                          <td className="py-3 px-4 text-right font-medium text-slate-700">
-                            {formatEuro(unitP)}
-                          </td>
-                          <td className="py-3 px-4 text-right font-bold text-slate-900">
-                            {formatEuro(m.quantity * unitP)}
-                          </td>
-                          <td className="py-3 px-5 text-slate-600">
-                            {m.supplier || '-'}
-                          </td>
-                        </tr>
-                      );
-                    })
-                  )}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 text-xs">
+                    {movements.filter((m) => m.type === 'CARICO').length === 0 ? (
+                      <tr>
+                        <td colSpan={6} className="py-10 text-center text-slate-400">
+                          Nessun carico merce registrato nello storico.
+                        </td>
+                      </tr>
+                    ) : (
+                      movements.filter((m) => m.type === 'CARICO').map((m) => {
+                        const prod = products.find((p) => p.id === m.product_id);
+                        const unitP = m.unit_price || 0;
+                        return (
+                          <tr key={m.id} className="hover:bg-slate-50/80 transition-colors">
+                            <td className="py-3 px-5 font-medium text-slate-600">
+                              {formatDateToItalian(m.movement_date)}
+                            </td>
+                            <td className="py-3 px-5 font-semibold text-slate-900">
+                              {prod?.name || 'Prodotto eliminato o non trovato'}
+                            </td>
+                            <td className="py-3 px-4 text-center">
+                              <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                +{m.quantity}
+                              </span>
+                            </td>
+                            <td className="py-3 px-4 text-right font-medium text-slate-700">
+                              {formatEuro(unitP)}
+                            </td>
+                            <td className="py-3 px-4 text-right font-bold text-slate-900">
+                              {formatEuro(m.quantity * unitP)}
+                            </td>
+                            <td className="py-3 px-5 text-slate-600">
+                              {m.supplier || '-'}
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
         )}
 
-        {/* ===================== TAB 3: REGISTRO SCARICHI ===================== */}
+        {/* ===================== TAB 3: REGISTRO SCARICHI (USCITA CONTINUA) ===================== */}
         {activeTab === 'scarico' && (
-          <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
-            <div className="p-4 border-b border-slate-200 bg-rose-50/40 flex items-center justify-between">
-              <div>
-                <h3 className="text-sm font-bold text-slate-900">Storico Movimenti di Scarico</h3>
-                <p className="text-xs text-slate-500 mt-0.5">Tutte le uscite merce e prelievi per reparto</p>
+          <div className="space-y-6">
+            {/* SEZIONE COMPILAZIONE SCARICO (SENZA POPUP) */}
+            <div className="bg-white rounded-xl border border-rose-200 shadow-sm overflow-hidden ring-1 ring-rose-500/10">
+              <div className="p-4 bg-gradient-to-r from-rose-500 to-red-600 text-white flex items-center justify-between">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-lg bg-white/20 flex items-center justify-center">
+                    <svg className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+                    </svg>
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-bold tracking-tight">Prelievo e Scarico Merce da Magazzino</h3>
+                    <p className="text-xs text-rose-100">Imposta richiedente e reparto, quindi aggiungi tutti gli articoli da prelevare in una sola volta</p>
+                  </div>
+                </div>
+
+                {scaricoItems.length > 0 && (
+                  <span className="px-3 py-1 rounded-full text-xs font-bold bg-white text-rose-800 shadow-xs">
+                    {scaricoItems.length} articoli pronti da scaricare
+                  </span>
+                )}
               </div>
-              <button
-                onClick={() => { setModalType('SCARICO'); setIsModalOpen(true); }}
-                className="inline-flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-lg bg-rose-600 text-white hover:bg-rose-700 transition-all cursor-pointer shadow-xs"
-              >
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M20 12H4" />
-                </svg>
-                Registra Nuovo Scarico
-              </button>
+
+              <div className="p-5">
+                {/* 1. Intestazione Scarico */}
+                <div className="grid grid-cols-3 gap-4 pb-4 mb-4 border-b border-slate-200">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">Richiedente / Operatore</label>
+                    <input
+                      type="text"
+                      placeholder="Nome di chi preleva la merce"
+                      value={scaricoRequester}
+                      onChange={(e) => setScaricoRequester(e.target.value)}
+                      className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-lg focus:outline-hidden focus:bg-white focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 text-slate-900 font-medium"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">Destinazione / Reparto / Stanza</label>
+                    <input
+                      type="text"
+                      placeholder="Es. Portineria, Uffici, Piano 2, Ristorante"
+                      value={scaricoDestination}
+                      onChange={(e) => setScaricoDestination(e.target.value)}
+                      className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-lg focus:outline-hidden focus:bg-white focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 text-slate-900 font-medium"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">Data Prelievo *</label>
+                    <input
+                      type="date"
+                      value={scaricoDate}
+                      onChange={(e) => setScaricoDate(e.target.value)}
+                      className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-lg focus:outline-hidden focus:bg-white focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 text-slate-900"
+                    />
+                  </div>
+                </div>
+
+                {/* 2. Riquadro aggiunta rapida articoli da scaricare */}
+                <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 mb-4">
+                  <p className="text-xs font-bold text-slate-700 mb-2.5 flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-rose-500"></span>
+                    Aggiungi articolo da scaricare:
+                  </p>
+
+                  <div className="grid grid-cols-12 gap-3 items-end">
+                    <div className="col-span-8">
+                      <label className="block text-[11px] font-semibold text-slate-600 mb-1">Seleziona Articolo</label>
+                      <select
+                        value={scaricoSelectedProductId}
+                        onChange={(e) => setScaricoSelectedProductId(e.target.value)}
+                        className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 font-medium"
+                      >
+                        <option value="">-- Seleziona un articolo da prelevare --</option>
+                        {products.map((p) => (
+                          <option key={p.id} value={p.id} disabled={p.stock === 0}>
+                            {p.name} {p.stock === 0 ? '(ESAURITO 0 pz)' : `(Disponibili: ${p.stock} pz)`}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="col-span-2">
+                      <label className="block text-[11px] font-semibold text-slate-600 mb-1">Quantità prelievo</label>
+                      <input
+                        type="number"
+                        min="1"
+                        value={scaricoQuantity}
+                        onChange={(e) => setScaricoQuantity(parseInt(e.target.value) || 1)}
+                        onKeyDown={(e) => { if (e.key === 'Enter') handleAddScaricoItem(); }}
+                        className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 font-bold text-center"
+                      />
+                    </div>
+
+                    <div className="col-span-2">
+                      <button
+                        type="button"
+                        onClick={handleAddScaricoItem}
+                        className="w-full py-2 px-3 text-xs font-bold text-rose-700 bg-rose-100/80 hover:bg-rose-200 border border-rose-300/80 rounded-lg transition-all cursor-pointer flex items-center justify-center gap-1.5 active:scale-98 shadow-xs"
+                      >
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+                        </svg>
+                        Aggiungi riga
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 3. Elenco degli articoli in scarico */}
+                {scaricoItems.length > 0 ? (
+                  <div className="border border-slate-200 rounded-xl overflow-hidden mb-5">
+                    <div className="bg-slate-100/80 px-4 py-2 border-b border-slate-200 flex justify-between items-center text-xs font-semibold text-slate-700">
+                      <span>Articoli da scaricare ({scaricoItems.length})</span>
+                      <span>
+                        Totale Pezzi in Prelievo: <strong className="text-rose-700">-{scaricoItems.reduce((acc, i) => acc + i.quantity, 0)}</strong>
+                      </span>
+                    </div>
+
+                    <table className="w-full text-left text-xs divide-y divide-slate-100">
+                      <thead className="bg-slate-50 text-[11px] font-semibold text-slate-500 uppercase">
+                        <tr>
+                          <th className="py-2.5 px-4">Prodotto</th>
+                          <th className="py-2.5 px-3 text-center">Giacenza Attuale</th>
+                          <th className="py-2.5 px-3 text-center">Quantità Scarico</th>
+                          <th className="py-2.5 px-3 text-center">Giacenza Residua</th>
+                          <th className="py-2.5 px-3 text-center">Rimuovi</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 bg-white">
+                        {scaricoItems.map((item) => (
+                          <tr key={item.tempId} className="hover:bg-slate-50/60">
+                            <td className="py-2.5 px-4 font-semibold text-slate-900">{item.productName}</td>
+                            <td className="py-2.5 px-3 text-center text-slate-500">{item.currentStock} pz</td>
+                            <td className="py-2.5 px-3 text-center font-bold text-rose-600 bg-rose-50/50">-{item.quantity}</td>
+                            <td className="py-2.5 px-3 text-center font-bold text-slate-800">{item.currentStock - item.quantity} pz</td>
+                            <td className="py-2.5 px-3 text-center">
+                              <button
+                                onClick={() => handleRemoveScaricoItem(item.tempId)}
+                                className="text-rose-500 hover:text-rose-700 p-1 rounded-md hover:bg-rose-50"
+                                title="Rimuovi questa riga"
+                              >
+                                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                  <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                </svg>
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <div className="py-6 text-center text-slate-400 text-xs border border-dashed border-slate-200 rounded-xl mb-4 bg-slate-50/30">
+                    Nessun prodotto inserito nello scarico. Seleziona l&apos;articolo in alto e clicca su &ldquo;Aggiungi riga&rdquo;.
+                  </div>
+                )}
+
+                {/* 4. Pulsante Concludi Scarico */}
+                <div className="flex items-center justify-between pt-2">
+                  <button
+                    type="button"
+                    disabled={scaricoItems.length === 0}
+                    onClick={() => {
+                      if (window.confirm('Vuoi annullare e svuotare questa lista di scarico?')) {
+                        setScaricoItems([]);
+                      }
+                    }}
+                    className={`px-4 py-2 text-xs font-semibold rounded-lg border transition-all ${
+                      scaricoItems.length === 0
+                        ? 'opacity-40 cursor-not-allowed text-slate-400 border-slate-200'
+                        : 'text-slate-600 hover:text-rose-600 hover:bg-rose-50 border-slate-200 cursor-pointer'
+                    }`}
+                  >
+                    Svuota lista scarico
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={isSaving || scaricoItems.length === 0}
+                    onClick={handleConcludeScarico}
+                    className={`inline-flex items-center gap-2 px-6 py-2.5 text-xs font-bold rounded-lg shadow-sm transition-all cursor-pointer ${
+                      scaricoItems.length === 0
+                        ? 'bg-slate-200 text-slate-400 cursor-not-allowed shadow-none'
+                        : 'bg-rose-600 text-white hover:bg-rose-700 active:scale-98 shadow-rose-500/20'
+                    }`}
+                  >
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                    </svg>
+                    {isSaving
+                      ? 'Registrazione scarico in corso...'
+                      : `Concludi Scarico (${scaricoItems.length} ${scaricoItems.length === 1 ? 'articolo' : 'articoli'})`}
+                  </button>
+                </div>
+              </div>
             </div>
 
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse">
-                <thead>
-                  <tr className="bg-slate-50/80 border-b border-slate-200 text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
-                    <th className="py-3 px-5">Data Prelievo</th>
-                    <th className="py-3 px-5">Prodotto</th>
-                    <th className="py-3 px-4 text-center">Quantità Scaricata</th>
-                    <th className="py-3 px-5">Richiedente</th>
-                    <th className="py-3 px-5">Destinazione / Reparto</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 text-xs">
-                  {movements.filter((m) => m.type === 'SCARICO').length === 0 ? (
-                    <tr>
-                      <td colSpan={5} className="py-10 text-center text-slate-400">
-                        Nessuno scarico registrato nello storico.
-                      </td>
+            {/* STORICO SCARICHI PASSATI */}
+            <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
+              <div className="p-4 border-b border-slate-200 bg-slate-50/60 flex items-center justify-between">
+                <div>
+                  <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700">Registro Storico Scarichi Merce</h3>
+                  <p className="text-xs text-slate-500 mt-0.5">Elenco di tutti i prelievi e uscite registrate in passato</p>
+                </div>
+                <span className="text-xs text-slate-500">
+                  Totale scarichi registrati: <strong>{movements.filter((m) => m.type === 'SCARICO').length}</strong>
+                </span>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="bg-slate-50/80 border-b border-slate-200 text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+                      <th className="py-3 px-5">Data</th>
+                      <th className="py-3 px-5">Prodotto</th>
+                      <th className="py-3 px-4 text-center">Quantità</th>
+                      <th className="py-3 px-5">Richiedente</th>
+                      <th className="py-3 px-5">Destinazione / Reparto</th>
                     </tr>
-                  ) : (
-                    movements.filter((m) => m.type === 'SCARICO').map((m) => {
-                      const prod = products.find((p) => p.id === m.product_id);
-                      return (
-                        <tr key={m.id} className="hover:bg-slate-50/80 transition-colors">
-                          <td className="py-3 px-5 font-medium text-slate-600">
-                            {formatDateToItalian(m.movement_date)}
-                          </td>
-                          <td className="py-3 px-5 font-semibold text-slate-900">
-                            {prod?.name || 'Prodotto eliminato o non trovato'}
-                          </td>
-                          <td className="py-3 px-4 text-center">
-                            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold bg-rose-50 text-rose-700 border border-rose-200">
-                              -{m.quantity}
-                            </span>
-                          </td>
-                          <td className="py-3 px-5 font-medium text-slate-700">
-                            {m.requester || '-'}
-                          </td>
-                          <td className="py-3 px-5 text-slate-600">
-                            {m.destination ? (
-                              <span className="inline-block px-2 py-0.5 rounded bg-slate-100 text-[11px] font-medium text-slate-700">
-                                {m.destination}
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 text-xs">
+                    {movements.filter((m) => m.type === 'SCARICO').length === 0 ? (
+                      <tr>
+                        <td colSpan={5} className="py-10 text-center text-slate-400">
+                          Nessuno scarico registrato nello storico.
+                        </td>
+                      </tr>
+                    ) : (
+                      movements.filter((m) => m.type === 'SCARICO').map((m) => {
+                        const prod = products.find((p) => p.id === m.product_id);
+                        return (
+                          <tr key={m.id} className="hover:bg-slate-50/80 transition-colors">
+                            <td className="py-3 px-5 font-medium text-slate-600">
+                              {formatDateToItalian(m.movement_date)}
+                            </td>
+                            <td className="py-3 px-5 font-semibold text-slate-900">
+                              {prod?.name || 'Prodotto eliminato o non trovato'}
+                            </td>
+                            <td className="py-3 px-4 text-center">
+                              <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold bg-rose-50 text-rose-700 border border-rose-200">
+                                -{m.quantity}
                               </span>
-                            ) : '-'}
-                          </td>
-                        </tr>
-                      );
-                    })
-                  )}
-                </tbody>
-              </table>
+                            </td>
+                            <td className="py-3 px-5 font-medium text-slate-700">
+                              {m.requester || '-'}
+                            </td>
+                            <td className="py-3 px-5 text-slate-600">
+                              {m.destination ? (
+                                <span className="inline-block px-2 py-0.5 rounded bg-slate-100 text-[11px] font-medium text-slate-700">
+                                  {m.destination}
+                                </span>
+                              ) : '-'}
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
         )}
@@ -1227,11 +1851,17 @@ export default function Home() {
                 <label className="block text-xs font-semibold text-slate-700 mb-1">Fornitore</label>
                 <input
                   type="text"
+                  list="suppliers-list-modal"
                   placeholder="Nome del fornitore o distributore"
                   value={newProductSupplier}
                   onChange={(e) => setNewProductSupplier(e.target.value)}
                   className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
                 />
+                <datalist id="suppliers-list-modal">
+                  {existingSuppliers.map((s) => (
+                    <option key={s} value={s} />
+                  ))}
+                </datalist>
               </div>
             </div>
 
@@ -1250,144 +1880,6 @@ export default function Home() {
                 className="px-5 py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors cursor-pointer shadow-xs"
               >
                 {isSaving ? 'Salvataggio...' : 'Crea Prodotto'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ===================== MODALE: REGISTRA CARICO / SCARICO ===================== */}
-      {isModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-xs">
-          <div className="bg-white rounded-2xl shadow-xl border border-slate-200 max-w-lg w-full p-6 animate-in zoom-in-95 duration-150">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-4">
-              <div className="flex items-center gap-2">
-                <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${
-                  modalType === 'CARICO' ? 'bg-emerald-50 text-emerald-600' : 'bg-rose-50 text-rose-600'
-                }`}>
-                  {modalType === 'CARICO' ? (
-                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
-                    </svg>
-                  ) : (
-                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M20 12H4" />
-                    </svg>
-                  )}
-                </div>
-                <h3 className="text-base font-bold text-slate-900">
-                  {modalType === 'CARICO' ? 'Registra Carico Merce' : 'Registra Scarico Merce'}
-                </h3>
-              </div>
-              <button
-                onClick={() => setIsModalOpen(false)}
-                className="text-slate-400 hover:text-slate-600 p-1 rounded-lg"
-              >
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
-            </div>
-
-            <div className="space-y-3.5 mb-6">
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Seleziona Articolo *</label>
-                <select
-                  value={selectedProductId}
-                  onChange={(e) => setSelectedProductId(e.target.value)}
-                  className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
-                >
-                  <option value="">-- Seleziona un articolo dall&apos;elenco --</option>
-                  {products.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name} (Disponibili: {p.stock} pz)
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">Quantità *</label>
-                  <input
-                    type="number"
-                    min="1"
-                    value={quantity}
-                    onChange={(e) => setQuantity(parseInt(e.target.value) || 1)}
-                    className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 font-semibold"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">Data Movimento</label>
-                  <input
-                    type="date"
-                    value={movementDate}
-                    onChange={(e) => setMovementDate(e.target.value)}
-                    className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
-                  />
-                </div>
-              </div>
-
-              {modalType === 'CARICO' && (
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">Fornitore</label>
-                  <input
-                    type="text"
-                    placeholder="Nome del fornitore da cui è arrivata la merce"
-                    value={supplier}
-                    onChange={(e) => setSupplier(e.target.value)}
-                    className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
-                  />
-                </div>
-              )}
-
-              {modalType === 'SCARICO' && (
-                <>
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-700 mb-1">Richiedente / Operatore</label>
-                    <input
-                      type="text"
-                      placeholder="Nome della persona che richiede o ritira"
-                      value={requester}
-                      onChange={(e) => setRequester(e.target.value)}
-                      className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-700 mb-1">Destinazione / Reparto</label>
-                    <input
-                      type="text"
-                      placeholder="Es. Uffici Amministrazione, Piano 1, Sala Riunioni"
-                      value={destination}
-                      onChange={(e) => setDestination(e.target.value)}
-                      className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
-                    />
-                  </div>
-                </>
-              )}
-            </div>
-
-            <div className="flex justify-end gap-2.5 pt-2 border-t border-slate-100">
-              <button
-                type="button"
-                onClick={() => setIsModalOpen(false)}
-                className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
-              >
-                Annulla
-              </button>
-              <button
-                type="button"
-                onClick={handleSaveMovement}
-                disabled={isSaving}
-                className={`px-5 py-2 text-xs font-semibold text-white rounded-lg transition-colors cursor-pointer shadow-xs ${
-                  modalType === 'CARICO'
-                    ? 'bg-emerald-600 hover:bg-emerald-700'
-                    : 'bg-rose-600 hover:bg-rose-700'
-                }`}
-              >
-                {isSaving ? 'Registrazione...' : modalType === 'CARICO' ? 'Conferma Carico' : 'Conferma Scarico'}
               </button>
             </div>
           </div>
