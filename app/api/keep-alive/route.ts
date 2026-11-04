@@ -1,11 +1,9 @@
 import { supabase } from '@/lib/supabase';
 import { NextResponse } from 'next/server';
 
-export const dynamic = 'force-dynamic';
-
 export async function GET() {
   try {
-    const { data, error } = await supabase.from('products').select('id').limit(1);
+    const { error } = await supabase.from('products').select('id').limit(1);
 
     if (error) {
       console.error('Keep-alive query error:', error);
