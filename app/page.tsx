@@ -77,7 +77,7 @@ function ProductSearchCombobox({
 
   useEffect(() => {
     if (selectedProduct && !isOpen) {
-      setQuery(selectedProduct.name);
+      setQuery(selectedProduct.name.toUpperCase());
     } else if (!selectedProduct && !isOpen) {
       setQuery('');
     }
@@ -88,7 +88,7 @@ function ProductSearchCombobox({
       if (ref.current && !ref.current.contains(e.target as Node)) {
         setIsOpen(false);
         if (selectedProduct) {
-          setQuery(selectedProduct.name);
+          setQuery(selectedProduct.name.toUpperCase());
         }
       }
     };
@@ -109,7 +109,7 @@ function ProductSearchCombobox({
 
   const handleSelect = (prod: Product) => {
     onSelect(String(prod.id));
-    setQuery(prod.name);
+    setQuery(prod.name.toUpperCase());
     setIsOpen(false);
     setHighlightedIndex(-1);
   };
@@ -170,7 +170,7 @@ function ProductSearchCombobox({
           type="text"
           value={query}
           onChange={(e) => {
-            setQuery(e.target.value);
+            setQuery(e.target.value.toUpperCase());
             if (!isOpen) setIsOpen(true);
             setHighlightedIndex(-1);
           }}
@@ -179,7 +179,7 @@ function ProductSearchCombobox({
           }}
           onKeyDown={handleKeyDown}
           placeholder={placeholder}
-          className="w-full pl-2 pr-7 text-xs text-slate-900 placeholder:text-slate-400 bg-transparent focus:outline-hidden font-medium"
+          className="w-full pl-2 pr-7 text-xs text-slate-900 placeholder:text-slate-400 bg-transparent focus:outline-hidden font-medium uppercase"
         />
 
         {query && (
@@ -576,8 +576,8 @@ export default function Home() {
         type: 'SCARICO',
         quantity: item.quantity,
         movement_date: scaricoDate,
-        requester: scaricoRequester.trim() || null,
-        destination: scaricoDestination.trim() || null,
+        requester: scaricoRequester.trim().toUpperCase() || null,
+        destination: scaricoDestination.trim().toUpperCase() || null,
       }));
 
       const { error: movError } = await supabase.from('movements').insert(movementsToInsert);
@@ -749,10 +749,10 @@ export default function Home() {
     setIsSaving(true);
     const { error } = await supabase.from('products').insert([
       {
-        name: newProductName.trim(),
+        name: newProductName.trim().toUpperCase(),
         stock: newProductStock,
         unit_price: newProductPrice,
-        supplier: newProductSupplier.trim(),
+        supplier: newProductSupplier.trim().toUpperCase(),
       },
     ]);
     setIsSaving(false);
@@ -760,7 +760,7 @@ export default function Home() {
     if (error) {
       addToast('error', 'Errore creazione prodotto', error.message);
     } else {
-      addToast('success', 'Nuovo prodotto aggiunto', `"${newProductName.trim()}" inserito con successo.`);
+      addToast('success', 'Nuovo prodotto aggiunto', `"${newProductName.trim().toUpperCase()}" inserito con successo.`);
       setIsNewProductModalOpen(false);
       setNewProductName('');
       setNewProductStock(0);
@@ -1250,8 +1250,8 @@ export default function Home() {
                   type="text"
                   placeholder="Cerca per nome prodotto o fornitore..."
                   value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  className="w-full pl-10 pr-9 py-2 bg-white text-xs text-slate-900 placeholder:text-slate-400 border border-slate-200 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                  onChange={(e) => setSearch(e.target.value.toUpperCase())}
+                  className="w-full pl-10 pr-9 py-2 bg-white text-xs text-slate-900 placeholder:text-slate-400 border border-slate-200 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all uppercase"
                 />
                 {search && (
                   <button
@@ -1505,14 +1505,14 @@ export default function Home() {
                     <input
                       type="text"
                       list="suppliers-list"
-                      placeholder="Es. CWS-BOCO, ALMA, MONDO PULITO..."
+                      placeholder="ES. CWS-BOCO, ALMA, MONDO PULITO..."
                       value={caricoSupplier}
-                      onChange={(e) => setCaricoSupplier(e.target.value)}
-                      className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-lg focus:outline-hidden focus:bg-white focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 font-semibold text-slate-900"
+                      onChange={(e) => setCaricoSupplier(e.target.value.toUpperCase())}
+                      className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-lg focus:outline-hidden focus:bg-white focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 font-semibold text-slate-900 uppercase"
                     />
                     <datalist id="suppliers-list">
                       {existingSuppliers.map((s) => (
-                        <option key={s} value={s} />
+                        <option key={s} value={s.toUpperCase()} />
                       ))}
                     </datalist>
                   </div>
@@ -1521,10 +1521,10 @@ export default function Home() {
                     <label className="block text-xs font-bold text-slate-700 mb-1">Riferimento / N. DDT (Opzionale)</label>
                     <input
                       type="text"
-                      placeholder="Es. DDT 458/26"
+                      placeholder="ES. DDT 458/26"
                       value={caricoReference}
-                      onChange={(e) => setCaricoReference(e.target.value)}
-                      className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-lg focus:outline-hidden focus:bg-white focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 text-slate-900"
+                      onChange={(e) => setCaricoReference(e.target.value.toUpperCase())}
+                      className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-lg focus:outline-hidden focus:bg-white focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 text-slate-900 uppercase"
                     />
                   </div>
 
@@ -1811,10 +1811,10 @@ export default function Home() {
                     <label className="block text-xs font-bold text-slate-700 mb-1">Richiedente / Operatore</label>
                     <input
                       type="text"
-                      placeholder="Nome di chi preleva la merce"
+                      placeholder="ES. CALESINI, MARIANA..."
                       value={scaricoRequester}
-                      onChange={(e) => setScaricoRequester(e.target.value)}
-                      className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-lg focus:outline-hidden focus:bg-white focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 text-slate-900 font-medium"
+                      onChange={(e) => setScaricoRequester(e.target.value.toUpperCase())}
+                      className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-lg focus:outline-hidden focus:bg-white focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 text-slate-900 font-medium uppercase"
                     />
                   </div>
 
@@ -1822,10 +1822,10 @@ export default function Home() {
                     <label className="block text-xs font-bold text-slate-700 mb-1">Destinazione / Reparto / Stanza</label>
                     <input
                       type="text"
-                      placeholder="Es. Portineria, Uffici, Piano 2, Ristorante"
+                      placeholder="ES. PORTINERIA, UFFICI, AVV., RISTORANTE..."
                       value={scaricoDestination}
-                      onChange={(e) => setScaricoDestination(e.target.value)}
-                      className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-lg focus:outline-hidden focus:bg-white focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 text-slate-900 font-medium"
+                      onChange={(e) => setScaricoDestination(e.target.value.toUpperCase())}
+                      className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-lg focus:outline-hidden focus:bg-white focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 text-slate-900 font-medium uppercase"
                     />
                   </div>
 
@@ -2067,8 +2067,8 @@ export default function Home() {
                       type="text"
                       placeholder="Cerca per data, richiedente, reparto o articolo..."
                       value={scaricoHistorySearch}
-                      onChange={(e) => setScaricoHistorySearch(e.target.value)}
-                      className="w-64 pl-8 pr-7 py-1.5 text-xs bg-white border border-slate-300 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 placeholder:text-slate-400"
+                      onChange={(e) => setScaricoHistorySearch(e.target.value.toUpperCase())}
+                      className="w-64 pl-8 pr-7 py-1.5 text-xs bg-white border border-slate-300 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 placeholder:text-slate-400 uppercase"
                     />
                     {scaricoHistorySearch && (
                       <button
@@ -2399,9 +2399,9 @@ export default function Home() {
                 <input
                   type="text"
                   value={inputWebProductName}
-                  onChange={(e) => setInputWebProductName(e.target.value)}
+                  onChange={(e) => setInputWebProductName(e.target.value.toUpperCase())}
                   placeholder="Nome originale o corretto del prodotto"
-                  className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 font-medium"
+                  className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 font-medium uppercase"
                 />
               </div>
 
@@ -2481,8 +2481,8 @@ export default function Home() {
               <input
                 type="text"
                 value={editName}
-                onChange={(e) => setEditName(e.target.value)}
-                className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 font-semibold text-slate-900"
+                onChange={(e) => setEditName(e.target.value.toUpperCase())}
+                className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 font-semibold text-slate-900 uppercase"
               />
             </div>
 
@@ -2519,8 +2519,8 @@ export default function Home() {
                   type="text"
                   placeholder="Nome fornitore"
                   value={editSupplier}
-                  onChange={(e) => setEditSupplier(e.target.value)}
-                  className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                  onChange={(e) => setEditSupplier(e.target.value.toUpperCase())}
+                  className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 uppercase"
                 />
               </div>
             </div>
@@ -2624,8 +2624,8 @@ export default function Home() {
                   autoFocus
                   placeholder="Es. CARTA IGIENICA ROTOLONI"
                   value={newProductName}
-                  onChange={(e) => setNewProductName(e.target.value)}
-                  className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 font-medium"
+                  onChange={(e) => setNewProductName(e.target.value.toUpperCase())}
+                  className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 font-medium uppercase"
                 />
               </div>
 
@@ -2664,14 +2664,14 @@ export default function Home() {
                 <input
                   type="text"
                   list="suppliers-list-modal"
-                  placeholder="Nome del fornitore o distributore"
+                  placeholder="ES. CWS-BOCO, ALMA..."
                   value={newProductSupplier}
-                  onChange={(e) => setNewProductSupplier(e.target.value)}
-                  className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                  onChange={(e) => setNewProductSupplier(e.target.value.toUpperCase())}
+                  className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 uppercase"
                 />
                 <datalist id="suppliers-list-modal">
                   {existingSuppliers.map((s) => (
-                    <option key={s} value={s} />
+                    <option key={s} value={s.toUpperCase()} />
                   ))}
                 </datalist>
               </div>
