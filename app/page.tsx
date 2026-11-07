@@ -33,6 +33,23 @@ interface BatchItem {
   currentStock: number;
 }
 
+interface ScaricoGroupItem {
+  movement: Movement;
+  productName: string;
+  unitPrice: number;
+  totalPrice: number;
+}
+
+interface ScaricoGroup {
+  key: string;
+  date: string;
+  requester: string;
+  destination: string;
+  items: ScaricoGroupItem[];
+  totalQuantity: number;
+  totalValue: number;
+}
+
 export default function Home() {
   const [products, setProducts] = useState<Product[]>([]);
   const [movements, setMovements] = useState<Movement[]>([]);
@@ -62,6 +79,11 @@ export default function Home() {
   const [scaricoSelectedProductId, setScaricoSelectedProductId] = useState('');
   const [scaricoQuantity, setScaricoQuantity] = useState(1);
   const [scaricoItems, setScaricoItems] = useState<BatchItem[]>([]);
+
+  // Vista e filtri Storico Scarichi
+  const [scaricoHistoryView, setScaricoHistoryView] = useState<'grouped' | 'list'>('grouped');
+  const [scaricoHistorySearch, setScaricoHistorySearch] = useState('');
+  const [expandedScaricoGroups, setExpandedScaricoGroups] = useState<Record<string, boolean>>({});
 
   // Modale Nuovo Prodotto
   const [isNewProductModalOpen, setIsNewProductModalOpen] = useState(false);
@@ -269,9 +291,15 @@ export default function Home() {
         `Registrati ${caricoItems.length} articoli per un totale di ${caricoItems.reduce((acc, i) => acc + i.quantity, 0)} pezzi.`
       );
 
-      // Reset stato sessione DDT
+      // Reset completo sessione DDT e campi di input
+      const today = new Date().toISOString().split('T')[0];
       setCaricoItems([]);
+      setCaricoSupplier('');
       setCaricoReference('');
+      setCaricoDate(today);
+      setCaricoSelectedProductId('');
+      setCaricoQuantity(1);
+      setCaricoUnitPrice(0);
       fetchData();
     } catch (err: any) {
       console.error(err);
@@ -366,7 +394,14 @@ export default function Home() {
         `Scaricati ${scaricoItems.length} articoli per un totale di ${scaricoItems.reduce((acc, i) => acc + i.quantity, 0)} pezzi.`
       );
 
+      // Reset completo sessione scarico e campi di input
+      const today = new Date().toISOString().split('T')[0];
       setScaricoItems([]);
+      setScaricoRequester('');
+      setScaricoDestination('');
+      setScaricoDate(today);
+      setScaricoSelectedProductId('');
+      setScaricoQuantity(1);
       fetchData();
     } catch (err: any) {
       console.error(err);
@@ -580,6 +615,119 @@ export default function Home() {
         return acc + (m.quantity || 0) * unitP;
       }, 0);
   }, [movements, products]);
+
+  // Raggruppamento storico scarichi per richiesta e data
+  const groupedScarichi = useMemo(() => {
+    const scarichi = movements.filter((m) => m.type === 'SCARICO');
+    const map = new Map<string, ScaricoGroup>();
+
+    scarichi.forEach((m) => {
+      const rawDate = m.movement_date || 'Senza data';
+      const rawReq = (m.requester || '').trim();
+      const rawDest = (m.destination || '').trim();
+      const key = `${rawDate}###${rawReq.toUpperCase()}###${rawDest.toUpperCase()}`;
+
+      const prod = products.find((p) => String(p.id) === String(m.product_id));
+      const unitPrice = prod?.unit_price || m.unit_price || 0;
+      const totalPrice = (m.quantity || 0) * unitPrice;
+
+      if (!map.has(key)) {
+        map.set(key, {
+          key,
+          date: rawDate,
+          requester: rawReq,
+          destination: rawDest,
+          items: [],
+          totalQuantity: 0,
+          totalValue: 0,
+        });
+      }
+
+      const group = map.get(key)!;
+      group.items.push({
+        movement: m,
+        productName: prod?.name || 'Prodotto eliminato o non trovato',
+        unitPrice,
+        totalPrice,
+      });
+      group.totalQuantity += m.quantity || 0;
+      group.totalValue += totalPrice;
+    });
+
+    return Array.from(map.values()).sort((a, b) => {
+      if (a.date === b.date) {
+        const aMaxId = Math.max(...a.items.map((i) => Number(i.movement.id) || 0));
+        const bMaxId = Math.max(...b.items.map((i) => Number(i.movement.id) || 0));
+        return bMaxId - aMaxId;
+      }
+      return b.date.localeCompare(a.date);
+    });
+  }, [movements, products]);
+
+  const filteredGroupedScarichi = useMemo(() => {
+    if (!scaricoHistorySearch.trim()) return groupedScarichi;
+    const q = scaricoHistorySearch.toLowerCase().trim();
+
+    return groupedScarichi.filter((g) => {
+      const matchHeader =
+        g.date.includes(q) ||
+        formatDateToItalian(g.date).toLowerCase().includes(q) ||
+        g.requester.toLowerCase().includes(q) ||
+        g.destination.toLowerCase().includes(q);
+      if (matchHeader) return true;
+
+      return g.items.some((item) => item.productName.toLowerCase().includes(q));
+    });
+  }, [groupedScarichi, scaricoHistorySearch]);
+
+  const filteredFlatScarichi = useMemo(() => {
+    const scarichi = movements.filter((m) => m.type === 'SCARICO');
+    if (!scaricoHistorySearch.trim()) return scarichi;
+    const q = scaricoHistorySearch.toLowerCase().trim();
+
+    return scarichi.filter((m) => {
+      const prod = products.find((p) => String(p.id) === String(m.product_id));
+      return (
+        (m.movement_date && (m.movement_date.includes(q) || formatDateToItalian(m.movement_date).toLowerCase().includes(q))) ||
+        (m.requester && m.requester.toLowerCase().includes(q)) ||
+        (m.destination && m.destination.toLowerCase().includes(q)) ||
+        (prod && prod.name.toLowerCase().includes(q))
+      );
+    });
+  }, [movements, products, scaricoHistorySearch]);
+
+  const isGroupExpanded = (key: string, index: number) => {
+    if (expandedScaricoGroups[key] !== undefined) {
+      return expandedScaricoGroups[key];
+    }
+    return index < 3;
+  };
+
+  const toggleScaricoGroup = (key: string, index: number) => {
+    setExpandedScaricoGroups((prev) => {
+      const current = prev[key] !== undefined ? prev[key] : index < 3;
+      return {
+        ...prev,
+        [key]: !current,
+      };
+    });
+  };
+
+  const expandAllScaricoGroups = () => {
+    const all: Record<string, boolean> = {};
+    filteredGroupedScarichi.forEach((g) => {
+      all[g.key] = true;
+    });
+    setExpandedScaricoGroups(all);
+  };
+
+  const collapseAllScaricoGroups = () => {
+    const none: Record<string, boolean> = {};
+    filteredGroupedScarichi.forEach((g) => {
+      none[g.key] = false;
+    });
+    setExpandedScaricoGroups(none);
+  };
 
   return (
     <div className="min-h-screen bg-slate-50/70 text-slate-800 antialiased pb-20">
@@ -1297,8 +1445,14 @@ export default function Home() {
                     disabled={caricoItems.length === 0}
                     onClick={() => {
                       if (window.confirm('Vuoi annullare e svuotare le righe di questo DDT?')) {
+                        const today = new Date().toISOString().split('T')[0];
                         setCaricoItems([]);
+                        setCaricoSupplier('');
                         setCaricoReference('');
+                        setCaricoDate(today);
+                        setCaricoSelectedProductId('');
+                        setCaricoQuantity(1);
+                        setCaricoUnitPrice(0);
                       }
                     }}
                     className={`px-4 py-2 text-xs font-semibold rounded-lg border transition-all ${
@@ -1625,7 +1779,13 @@ export default function Home() {
                     disabled={scaricoItems.length === 0}
                     onClick={() => {
                       if (window.confirm('Vuoi annullare e svuotare questa lista di scarico?')) {
+                        const today = new Date().toISOString().split('T')[0];
                         setScaricoItems([]);
+                        setScaricoRequester('');
+                        setScaricoDestination('');
+                        setScaricoDate(today);
+                        setScaricoSelectedProductId('');
+                        setScaricoQuantity(1);
                       }
                     }}
                     className={`px-4 py-2 text-xs font-semibold rounded-lg border transition-all ${
@@ -1658,80 +1818,315 @@ export default function Home() {
               </div>
             </div>
 
-            {/* STORICO SCARICHI PASSATI */}
+            {/* STORICO SCARICHI PASSATI (RAGGRUPPATI PER RICHIESTA E DATA) */}
             <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
-              <div className="p-4 border-b border-slate-200 bg-slate-50/60 flex items-center justify-between">
+              <div className="p-4 border-b border-slate-200 bg-slate-50/70 flex flex-col md:flex-row md:items-center justify-between gap-4">
                 <div>
-                  <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700">Registro Storico Scarichi Merce</h3>
-                  <p className="text-xs text-slate-500 mt-0.5">Elenco di tutti i prelievi e uscite registrate in passato</p>
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700">Registro Storico Scarichi Merce</h3>
+                    <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-rose-100 text-rose-800">
+                      {scaricoHistoryView === 'grouped' ? `${filteredGroupedScarichi.length} richieste` : `${filteredFlatScarichi.length} movimenti`}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Totale scarichi: <strong>{movements.filter((m) => m.type === 'SCARICO').length}</strong> | 
+                    Valore totale: <strong className="text-slate-900">{formatEuro(totalScaricoHistoryValue)}</strong>
+                  </p>
                 </div>
-                <span className="text-xs text-slate-500">
-                  Totale scarichi: <strong>{movements.filter((m) => m.type === 'SCARICO').length}</strong> | Valore totale: <strong className="text-slate-900">{formatEuro(totalScaricoHistoryValue)}</strong>
-                </span>
-              </div>
 
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse">
-                  <thead>
-                    <tr className="bg-slate-50/80 border-b border-slate-200 text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
-                      <th className="py-3 px-5">Data</th>
-                      <th className="py-3 px-5">Prodotto</th>
-                      <th className="py-3 px-4 text-center">Quantità</th>
-                      <th className="py-3 px-4 text-right">Prezzo Unitario</th>
-                      <th className="py-3 px-4 text-right">Totale Uscita</th>
-                      <th className="py-3 px-5">Richiedente</th>
-                      <th className="py-3 px-5">Destinazione / Reparto</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 text-xs">
-                    {movements.filter((m) => m.type === 'SCARICO').length === 0 ? (
-                      <tr>
-                        <td colSpan={7} className="py-10 text-center text-slate-400">
-                          Nessuno scarico registrato nello storico.
-                        </td>
-                      </tr>
-                    ) : (
-                      movements.filter((m) => m.type === 'SCARICO').map((m) => {
-                        const prod = products.find((p) => String(p.id) === String(m.product_id));
-                        const unitP = prod?.unit_price || m.unit_price || 0;
-                        const rowTotal = m.quantity * unitP;
-
-                        return (
-                          <tr key={m.id} className="hover:bg-slate-50/80 transition-colors">
-                            <td className="py-3 px-5 font-medium text-slate-600">
-                              {formatDateToItalian(m.movement_date)}
-                            </td>
-                            <td className="py-3 px-5 font-semibold text-slate-900">
-                              {prod?.name || 'Prodotto eliminato o non trovato'}
-                            </td>
-                            <td className="py-3 px-4 text-center">
-                              <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold bg-rose-50 text-rose-700 border border-rose-200">
-                                -{m.quantity}
-                              </span>
-                            </td>
-                            <td className="py-3 px-4 text-right font-medium text-slate-700">
-                              {formatEuro(unitP)}
-                            </td>
-                            <td className="py-3 px-4 text-right font-bold text-slate-900">
-                              {formatEuro(rowTotal)}
-                            </td>
-                            <td className="py-3 px-5 font-medium text-slate-700">
-                              {m.requester || '-'}
-                            </td>
-                            <td className="py-3 px-5 text-slate-600">
-                              {m.destination ? (
-                                <span className="inline-block px-2 py-0.5 rounded bg-slate-100 text-[11px] font-medium text-slate-700">
-                                  {m.destination}
-                                </span>
-                              ) : '-'}
-                            </td>
-                          </tr>
-                        );
-                      })
+                <div className="flex items-center gap-2.5 flex-wrap">
+                  {/* Ricerca nello storico */}
+                  <div className="relative">
+                    <div className="absolute inset-y-0 left-0 pl-2.5 flex items-center pointer-events-none text-slate-400">
+                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                      </svg>
+                    </div>
+                    <input
+                      type="text"
+                      placeholder="Cerca per data, richiedente, reparto o articolo..."
+                      value={scaricoHistorySearch}
+                      onChange={(e) => setScaricoHistorySearch(e.target.value)}
+                      className="w-64 pl-8 pr-7 py-1.5 text-xs bg-white border border-slate-300 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 placeholder:text-slate-400"
+                    />
+                    {scaricoHistorySearch && (
+                      <button
+                        onClick={() => setScaricoHistorySearch('')}
+                        className="absolute inset-y-0 right-0 pr-2.5 flex items-center text-slate-400 hover:text-slate-600"
+                      >
+                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      </button>
                     )}
-                  </tbody>
-                </table>
+                  </div>
+
+                  {/* Switcher Vista Raggruppata vs Tabella Piatta */}
+                  <div className="inline-flex rounded-lg border border-slate-200 bg-slate-100 p-0.5 text-xs font-medium">
+                    <button
+                      type="button"
+                      onClick={() => setScaricoHistoryView('grouped')}
+                      className={`px-2.5 py-1 rounded-md transition-all cursor-pointer flex items-center gap-1.5 ${
+                        scaricoHistoryView === 'grouped'
+                          ? 'bg-white text-slate-900 font-bold shadow-xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      <svg className="w-3.5 h-3.5 text-rose-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+                      </svg>
+                      Per Richiesta ({groupedScarichi.length})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setScaricoHistoryView('list')}
+                      className={`px-2.5 py-1 rounded-md transition-all cursor-pointer flex items-center gap-1.5 ${
+                        scaricoHistoryView === 'list'
+                          ? 'bg-white text-slate-900 font-bold shadow-xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      <svg className="w-3.5 h-3.5 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 10h16M4 14h16M4 18h16" />
+                      </svg>
+                      Righe Singole
+                    </button>
+                  </div>
+
+                  {/* Pulsanti Espandi / Comprimi tutti (solo in modalità grouped) */}
+                  {scaricoHistoryView === 'grouped' && filteredGroupedScarichi.length > 0 && (
+                    <div className="flex items-center gap-1 border-l border-slate-200 pl-2">
+                      <button
+                        type="button"
+                        onClick={expandAllScaricoGroups}
+                        className="px-2 py-1 text-[11px] font-semibold text-slate-600 hover:text-slate-900 hover:bg-slate-200/60 rounded-md transition-colors cursor-pointer"
+                        title="Espandi tutte le richieste"
+                      >
+                        Espandi tutti
+                      </button>
+                      <span className="text-slate-300">|</span>
+                      <button
+                        type="button"
+                        onClick={collapseAllScaricoGroups}
+                        className="px-2 py-1 text-[11px] font-semibold text-slate-600 hover:text-slate-900 hover:bg-slate-200/60 rounded-md transition-colors cursor-pointer"
+                        title="Comprimi tutte le richieste"
+                      >
+                        Comprimi tutti
+                      </button>
+                    </div>
+                  )}
+                </div>
               </div>
+
+              {/* CONTENUTO VISTA 1: RAGGRUPPATA PER RICHIESTE E DATA */}
+              {scaricoHistoryView === 'grouped' ? (
+                <div className="p-4 space-y-3">
+                  {filteredGroupedScarichi.length === 0 ? (
+                    <div className="py-12 text-center text-slate-400 text-xs">
+                      {scaricoHistorySearch
+                        ? `Nessuna richiesta di scarico corrisponde a "${scaricoHistorySearch}".`
+                        : 'Nessuno scarico registrato nello storico.'}
+                    </div>
+                  ) : (
+                    filteredGroupedScarichi.map((group, idx) => {
+                      const isExpanded = isGroupExpanded(group.key, idx);
+
+                      return (
+                        <div
+                          key={group.key}
+                          className="border border-slate-200 rounded-xl overflow-hidden shadow-xs hover:border-slate-300 transition-all bg-white"
+                        >
+                          {/* Intestazione Scheda Richiesta */}
+                          <div
+                            onClick={() => toggleScaricoGroup(group.key, idx)}
+                            className="p-3.5 bg-slate-50/90 hover:bg-slate-100/70 cursor-pointer flex items-center justify-between gap-4 transition-colors select-none"
+                          >
+                            <div className="flex items-center gap-3 flex-wrap">
+                              {/* Data Richiesta */}
+                              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white border border-slate-200 text-xs font-bold text-slate-800 shadow-2xs">
+                                <svg className="w-3.5 h-3.5 text-rose-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                  <path strokeLinecap="round" strokeLinejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                                </svg>
+                                <span>{formatDateToItalian(group.date)}</span>
+                              </div>
+
+                              {/* Richiedente */}
+                              <div className="flex items-center gap-1 text-xs">
+                                <span className="text-slate-400 font-medium">Richiedente:</span>
+                                {group.requester ? (
+                                  <span className="font-bold text-slate-900 bg-rose-50 border border-rose-100 text-rose-800 px-2 py-0.5 rounded-md">
+                                    {group.requester}
+                                  </span>
+                                ) : (
+                                  <span className="text-slate-400 italic">Non indicato</span>
+                                )}
+                              </div>
+
+                              {/* Destinazione / Reparto */}
+                              <div className="flex items-center gap-1 text-xs">
+                                <span className="text-slate-400 font-medium">Destinazione:</span>
+                                {group.destination ? (
+                                  <span className="font-semibold text-slate-800 bg-slate-200/70 px-2 py-0.5 rounded-md">
+                                    {group.destination}
+                                  </span>
+                                ) : (
+                                  <span className="text-slate-400 italic">Non indicata</span>
+                                )}
+                              </div>
+                            </div>
+
+                            {/* Totali e indicatore freccia */}
+                            <div className="flex items-center gap-4">
+                              <div className="text-right">
+                                <div className="text-xs font-bold text-slate-900">
+                                  {group.items.length} {group.items.length === 1 ? 'articolo' : 'articoli'} ({group.totalQuantity} pz)
+                                </div>
+                                <div className="text-[11px] font-semibold text-rose-600">
+                                  Valore Totale: {formatEuro(group.totalValue)}
+                                </div>
+                              </div>
+
+                              <div className="w-7 h-7 rounded-lg bg-white border border-slate-200 text-slate-500 flex items-center justify-center transition-transform">
+                                <svg
+                                  className={`w-4 h-4 transition-transform duration-200 ${isExpanded ? 'rotate-180' : ''}`}
+                                  fill="none"
+                                  viewBox="0 0 24 24"
+                                  stroke="currentColor"
+                                  strokeWidth={2}
+                                >
+                                  <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                                </svg>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Dettagli Articoli (quando espanso) */}
+                          {isExpanded && (
+                            <div className="border-t border-slate-200 bg-white">
+                              <table className="w-full text-left text-xs divide-y divide-slate-100">
+                                <thead className="bg-slate-50/70 text-[11px] font-semibold text-slate-500 uppercase">
+                                  <tr>
+                                    <th className="py-2.5 px-4">Articolo Prelevato</th>
+                                    <th className="py-2.5 px-3 text-center">Quantità Scaricata</th>
+                                    <th className="py-2.5 px-3 text-right">Prezzo Unitario</th>
+                                    <th className="py-2.5 px-4 text-right">Totale Riga</th>
+                                    <th className="py-2.5 px-3 text-center">Prezzo Web</th>
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-slate-100">
+                                  {group.items.map((item, iIdx) => {
+                                    const prod = products.find((p) => String(p.id) === String(item.movement.product_id));
+
+                                    return (
+                                      <tr key={item.movement.id || iIdx} className="hover:bg-slate-50/60 transition-colors">
+                                        <td className="py-2.5 px-4 font-semibold text-slate-900">
+                                          {item.productName}
+                                        </td>
+                                        <td className="py-2.5 px-3 text-center">
+                                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold bg-rose-50 text-rose-700 border border-rose-200">
+                                            -{item.movement.quantity} pz
+                                          </span>
+                                        </td>
+                                        <td className="py-2.5 px-3 text-right font-medium text-slate-700">
+                                          {formatEuro(item.unitPrice)}
+                                        </td>
+                                        <td className="py-2.5 px-4 text-right font-bold text-slate-900">
+                                          {formatEuro(item.totalPrice)}
+                                        </td>
+                                        <td className="py-2.5 px-3 text-center">
+                                          {prod && (
+                                            <button
+                                              type="button"
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                handleWebPriceSearch(prod);
+                                              }}
+                                              title="Cerca e aggiorna prezzo web per questo articolo"
+                                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200 transition-colors cursor-pointer"
+                                            >
+                                              🌐 Web
+                                            </button>
+                                          )}
+                                        </td>
+                                      </tr>
+                                    );
+                                  })}
+                                </tbody>
+                              </table>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              ) : (
+                /* CONTENUTO VISTA 2: LISTA PIATTA DETTAGLIATA A RIGHE SINGOLE */
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="bg-slate-50/80 border-b border-slate-200 text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+                        <th className="py-3 px-5">Data</th>
+                        <th className="py-3 px-5">Prodotto</th>
+                        <th className="py-3 px-4 text-center">Quantità</th>
+                        <th className="py-3 px-4 text-right">Prezzo Unitario</th>
+                        <th className="py-3 px-4 text-right">Totale Uscita</th>
+                        <th className="py-3 px-5">Richiedente</th>
+                        <th className="py-3 px-5">Destinazione / Reparto</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 text-xs">
+                      {filteredFlatScarichi.length === 0 ? (
+                        <tr>
+                          <td colSpan={7} className="py-10 text-center text-slate-400">
+                            {scaricoHistorySearch
+                              ? `Nessuno scarico corrisponde a "${scaricoHistorySearch}".`
+                              : 'Nessuno scarico registrato nello storico.'}
+                          </td>
+                        </tr>
+                      ) : (
+                        filteredFlatScarichi.map((m) => {
+                          const prod = products.find((p) => String(p.id) === String(m.product_id));
+                          const unitP = prod?.unit_price || m.unit_price || 0;
+                          const rowTotal = m.quantity * unitP;
+
+                          return (
+                            <tr key={m.id} className="hover:bg-slate-50/80 transition-colors">
+                              <td className="py-3 px-5 font-medium text-slate-600">
+                                {formatDateToItalian(m.movement_date)}
+                              </td>
+                              <td className="py-3 px-5 font-semibold text-slate-900">
+                                {prod?.name || 'Prodotto eliminato o non trovato'}
+                              </td>
+                              <td className="py-3 px-4 text-center">
+                                <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold bg-rose-50 text-rose-700 border border-rose-200">
+                                  -{m.quantity}
+                                </span>
+                              </td>
+                              <td className="py-3 px-4 text-right font-medium text-slate-700">
+                                {formatEuro(unitP)}
+                              </td>
+                              <td className="py-3 px-4 text-right font-bold text-slate-900">
+                                {formatEuro(rowTotal)}
+                              </td>
+                              <td className="py-3 px-5 font-medium text-slate-700">
+                                {m.requester || '-'}
+                              </td>
+                              <td className="py-3 px-5 text-slate-600">
+                                {m.destination ? (
+                                  <span className="inline-block px-2 py-0.5 rounded bg-slate-100 text-[11px] font-medium text-slate-700">
+                                    {m.destination}
+                                  </span>
+                                ) : '-'}
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           </div>
         )}
