@@ -629,7 +629,7 @@ export default function Home() {
     window.open(`https://www.google.com/search?tbm=shop&q=${searchQuery}`, '_blank', 'noopener,noreferrer');
 
     setWebPriceProduct(product);
-    setInputWebProductName(product.name);
+    setInputWebProductName(product.name.toUpperCase());
     setInputWebPrice(product.unit_price ? product.unit_price.toString() : '');
   };
 
@@ -643,7 +643,7 @@ export default function Home() {
     if (!webPriceProduct) return;
     const targetId = webPriceProduct.id;
     const newPrice = parseFloat(inputWebPrice.replace(',', '.'));
-    const newName = inputWebProductName.trim() || webPriceProduct.name;
+    const newName = (inputWebProductName.trim() || webPriceProduct.name).toUpperCase();
 
     if (isNaN(newPrice) || newPrice < 0) {
       addToast('error', 'Prezzo non valido', 'Inserisci un valore numerico valido per il prezzo (es. 4.50)');
@@ -699,12 +699,13 @@ export default function Home() {
   const handleSaveEditProduct = async () => {
     if (!editingProduct) return;
     const targetId = editingProduct.id;
-    const newName = editName.trim() || editingProduct.name;
+    const newName = (editName.trim() || editingProduct.name).toUpperCase();
+    const newSupplier = editSupplier.trim().toUpperCase();
 
     setIsSaving(true);
     const { error } = await supabase
       .from('products')
-      .update({ name: newName, stock: editStock, unit_price: editPrice, supplier: editSupplier })
+      .update({ name: newName, stock: editStock, unit_price: editPrice, supplier: newSupplier || null })
       .eq('id', targetId);
     setIsSaving(false);
 
@@ -1382,7 +1383,7 @@ export default function Home() {
                         >
                           <td className="py-3 px-5 font-medium text-slate-900">
                             <div className="flex items-center gap-2">
-                              <span>{p.name}</span>
+                              <span className="uppercase font-semibold">{p.name}</span>
                             </div>
                           </td>
 
@@ -1636,7 +1637,7 @@ export default function Home() {
                       <tbody className="divide-y divide-slate-100 bg-white">
                         {caricoItems.map((item) => (
                           <tr key={item.tempId} className="hover:bg-slate-50/60">
-                            <td className="py-2.5 px-4 font-semibold text-slate-900">{item.productName}</td>
+                            <td className="py-2.5 px-4 font-semibold text-slate-900 uppercase">{item.productName}</td>
                             <td className="py-2.5 px-3 text-center text-slate-500">{item.currentStock} pz</td>
                             <td className="py-2.5 px-3 text-center font-bold text-emerald-600 bg-emerald-50/50">+{item.quantity}</td>
                             <td className="py-2.5 px-3 text-center font-bold text-slate-800">{item.currentStock + item.quantity} pz</td>
@@ -1751,7 +1752,7 @@ export default function Home() {
                             <td className="py-3 px-5 font-medium text-slate-600">
                               {formatDateToItalian(m.movement_date)}
                             </td>
-                            <td className="py-3 px-5 font-semibold text-slate-900">
+                            <td className="py-3 px-5 font-semibold text-slate-900 uppercase">
                               {prod?.name || 'Prodotto eliminato o non trovato'}
                             </td>
                             <td className="py-3 px-4 text-center">
@@ -1946,7 +1947,7 @@ export default function Home() {
 
                           return (
                             <tr key={item.tempId} className="hover:bg-slate-50/60">
-                              <td className="py-2.5 px-4 font-semibold text-slate-900">{item.productName}</td>
+                              <td className="py-2.5 px-4 font-semibold text-slate-900 uppercase">{item.productName}</td>
                               <td className="py-2.5 px-3 text-center text-slate-500">{item.currentStock} pz</td>
                               <td className="py-2.5 px-3 text-center font-bold text-rose-600 bg-rose-50/50">-{item.quantity}</td>
                               <td className={`py-2.5 px-3 text-center font-bold ${residualStock < 0 ? 'text-amber-600' : 'text-slate-800'}`}>
@@ -2240,7 +2241,7 @@ export default function Home() {
 
                                     return (
                                       <tr key={item.movement.id || iIdx} className="hover:bg-slate-50/60 transition-colors">
-                                        <td className="py-2.5 px-4 font-semibold text-slate-900">
+                                        <td className="py-2.5 px-4 font-semibold text-slate-900 uppercase">
                                           {item.productName}
                                         </td>
                                         <td className="py-2.5 px-3 text-center">
@@ -2316,7 +2317,7 @@ export default function Home() {
                               <td className="py-3 px-5 font-medium text-slate-600">
                                 {formatDateToItalian(m.movement_date)}
                               </td>
-                              <td className="py-3 px-5 font-semibold text-slate-900">
+                              <td className="py-3 px-5 font-semibold text-slate-900 uppercase">
                                 {prod?.name || 'Prodotto eliminato o non trovato'}
                               </td>
                               <td className="py-3 px-4 text-center">
