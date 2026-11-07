@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
 import { Product, Movement } from '@/types';
 
@@ -50,6 +50,215 @@ interface ScaricoGroup {
   totalValue: number;
 }
 
+interface ProductSearchComboboxProps {
+  products: Product[];
+  selectedProductId: string | number;
+  onSelect: (productId: string) => void;
+  placeholder?: string;
+  theme?: 'rose' | 'emerald' | 'blue';
+}
+
+function ProductSearchCombobox({
+  products,
+  selectedProductId,
+  onSelect,
+  placeholder = 'Digita per cercare articolo...',
+  theme = 'rose',
+}: ProductSearchComboboxProps) {
+  const [query, setQuery] = useState('');
+  const [isOpen, setIsOpen] = useState(false);
+  const [highlightedIndex, setHighlightedIndex] = useState<number>(-1);
+  const ref = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const selectedProduct = useMemo(() => {
+    return products.find((p) => String(p.id) === String(selectedProductId));
+  }, [products, selectedProductId]);
+
+  useEffect(() => {
+    if (selectedProduct && !isOpen) {
+      setQuery(selectedProduct.name);
+    } else if (!selectedProduct && !isOpen) {
+      setQuery('');
+    }
+  }, [selectedProduct, isOpen]);
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setIsOpen(false);
+        if (selectedProduct) {
+          setQuery(selectedProduct.name);
+        }
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [selectedProduct]);
+
+  const filteredProducts = useMemo(() => {
+    const words = query.toLowerCase().trim().split(/\s+/).filter(Boolean);
+    if (words.length === 0) {
+      return products.slice(0, 40);
+    }
+    return products.filter((p) => {
+      const text = `${p.name} ${p.supplier || ''}`.toLowerCase();
+      return words.every((w) => text.includes(w));
+    });
+  }, [products, query]);
+
+  const handleSelect = (prod: Product) => {
+    onSelect(String(prod.id));
+    setQuery(prod.name);
+    setIsOpen(false);
+    setHighlightedIndex(-1);
+  };
+
+  const handleClear = () => {
+    onSelect('');
+    setQuery('');
+    setIsOpen(false);
+    setHighlightedIndex(-1);
+    inputRef.current?.focus();
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (!isOpen) {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        setIsOpen(true);
+        return;
+      }
+    }
+
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setHighlightedIndex((prev) => (prev < filteredProducts.length - 1 ? prev + 1 : 0));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setHighlightedIndex((prev) => (prev > 0 ? prev - 1 : filteredProducts.length - 1));
+    } else if (e.key === 'Enter') {
+      if (isOpen && highlightedIndex >= 0 && highlightedIndex < filteredProducts.length) {
+        e.preventDefault();
+        handleSelect(filteredProducts[highlightedIndex]);
+      } else if (isOpen && filteredProducts.length === 1) {
+        e.preventDefault();
+        handleSelect(filteredProducts[0]);
+      }
+    } else if (e.key === 'Escape') {
+      setIsOpen(false);
+    }
+  };
+
+  const ringFocusColor =
+    theme === 'emerald'
+      ? 'focus-within:ring-emerald-500/20 focus-within:border-emerald-500'
+      : 'focus-within:ring-rose-500/20 focus-within:border-rose-500';
+
+  const activeBgColor = theme === 'emerald' ? 'bg-emerald-50 text-emerald-950 font-bold' : 'bg-rose-50 text-rose-950 font-bold';
+
+  return (
+    <div ref={ref} className="relative w-full">
+      <div className={`relative flex items-center bg-white border border-slate-300 rounded-lg shadow-2xs transition-all h-[34px] ${ringFocusColor}`}>
+        <div className="pl-2.5 text-slate-400 pointer-events-none">
+          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+          </svg>
+        </div>
+
+        <input
+          ref={inputRef}
+          type="text"
+          value={query}
+          onChange={(e) => {
+            setQuery(e.target.value);
+            if (!isOpen) setIsOpen(true);
+            setHighlightedIndex(-1);
+          }}
+          onFocus={() => {
+            setIsOpen(true);
+          }}
+          onKeyDown={handleKeyDown}
+          placeholder={placeholder}
+          className="w-full pl-2 pr-7 text-xs text-slate-900 placeholder:text-slate-400 bg-transparent focus:outline-hidden font-medium"
+        />
+
+        {query && (
+          <button
+            type="button"
+            onClick={handleClear}
+            className="absolute right-1.5 p-1 text-slate-400 hover:text-slate-600 rounded-md transition-colors cursor-pointer"
+            title="Azzera e cerca altro articolo"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        )}
+      </div>
+
+      {/* Dropdown Menu Flottante */}
+      {isOpen && (
+        <div className="absolute left-0 right-0 z-50 mt-1 max-h-72 overflow-y-auto bg-white border border-slate-200 rounded-xl shadow-xl divide-y divide-slate-100 animate-in fade-in-50 zoom-in-95 duration-100">
+          <div className="p-2 bg-slate-50/95 text-[10px] font-semibold text-slate-500 flex justify-between items-center sticky top-0 z-10 border-b border-slate-200">
+            <span>
+              {filteredProducts.length === 0
+                ? 'Nessun articolo trovato'
+                : `Trovati ${filteredProducts.length} articoli su ${products.length}:`}
+            </span>
+            <span className="text-slate-400 font-normal">Frecce ↑↓ e Invio per selezionare</span>
+          </div>
+
+          {filteredProducts.length === 0 ? (
+            <div className="p-4 text-center text-xs text-slate-400">
+              Nessun articolo corrisponde a &ldquo;<strong>{query}</strong>&rdquo;.
+            </div>
+          ) : (
+            filteredProducts.map((p, idx) => {
+              const isSelected = selectedProduct && String(selectedProduct.id) === String(p.id);
+              const isHighlighted = idx === highlightedIndex;
+
+              return (
+                <div
+                  key={p.id}
+                  onClick={() => handleSelect(p)}
+                  onMouseEnter={() => setHighlightedIndex(idx)}
+                  className={`px-3 py-2 cursor-pointer flex items-center justify-between gap-3 text-xs transition-colors ${
+                    isHighlighted || isSelected ? activeBgColor : 'hover:bg-slate-50/80 text-slate-800'
+                  }`}
+                >
+                  <div className="flex-1 min-w-0">
+                    <div className="font-semibold text-slate-900 truncate">{p.name}</div>
+                    {p.supplier && (
+                      <div className="text-[10px] text-slate-500 mt-0.5 truncate">Fornitore: {p.supplier}</div>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-2 whitespace-nowrap text-right">
+                    <span
+                      className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                        p.stock === 0
+                          ? 'bg-rose-100 text-rose-700'
+                          : p.stock <= 2
+                          ? 'bg-amber-100 text-amber-800'
+                          : 'bg-slate-100 text-slate-700'
+                      }`}
+                    >
+                      {p.stock} pz
+                    </span>
+                    <span className="font-semibold text-slate-700 text-xs">
+                      {formatEuro(p.unit_price)}
+                    </span>
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Home() {
   const [products, setProducts] = useState<Product[]>([]);
   const [movements, setMovements] = useState<Movement[]>([]);
@@ -92,12 +301,14 @@ export default function Home() {
   const [newProductPrice, setNewProductPrice] = useState<number>(0);
   const [newProductSupplier, setNewProductSupplier] = useState('');
 
-  // Modale Prezzo Web
+  // Modale Prezzo Web e Correzione Nome
   const [webPriceProduct, setWebPriceProduct] = useState<Product | null>(null);
+  const [inputWebProductName, setInputWebProductName] = useState<string>('');
   const [inputWebPrice, setInputWebPrice] = useState<string>('');
 
   // Modale Modifica Prodotto
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
+  const [editName, setEditName] = useState<string>('');
   const [editStock, setEditStock] = useState<number>(0);
   const [editPrice, setEditPrice] = useState<number>(0);
   const [editSupplier, setEditSupplier] = useState<string>('');
@@ -418,43 +629,61 @@ export default function Home() {
     window.open(`https://www.google.com/search?tbm=shop&q=${searchQuery}`, '_blank', 'noopener,noreferrer');
 
     setWebPriceProduct(product);
+    setInputWebProductName(product.name);
     setInputWebPrice(product.unit_price ? product.unit_price.toString() : '');
+  };
+
+  const handleReSearchWebPrice = () => {
+    const queryName = inputWebProductName.replace(/\(.*?\)/g, '').trim() || webPriceProduct?.name || '';
+    const searchQuery = encodeURIComponent(`prezzo ${queryName}`);
+    window.open(`https://www.google.com/search?tbm=shop&q=${searchQuery}`, '_blank', 'noopener,noreferrer');
   };
 
   const handleSaveWebPrice = async () => {
     if (!webPriceProduct) return;
     const targetId = webPriceProduct.id;
     const newPrice = parseFloat(inputWebPrice.replace(',', '.'));
+    const newName = inputWebProductName.trim() || webPriceProduct.name;
 
     if (isNaN(newPrice) || newPrice < 0) {
-      addToast('error', 'Prezzo non valido', 'Inserisci un valore numerico valido (es. 4.50)');
+      addToast('error', 'Prezzo non valido', 'Inserisci un valore numerico valido per il prezzo (es. 4.50)');
+      return;
+    }
+
+    if (!newName) {
+      addToast('error', 'Nome non valido', 'Inserisci un nome valido per il prodotto.');
       return;
     }
 
     setIsSaving(true);
     const { error } = await supabase
       .from('products')
-      .update({ unit_price: newPrice })
+      .update({ name: newName, unit_price: newPrice })
       .eq('id', targetId);
     setIsSaving(false);
 
     if (error) {
-      addToast('error', 'Errore aggiornamento prezzo', error.message);
+      addToast('error', 'Errore aggiornamento prodotto', error.message);
     } else {
-      addToast('success', 'Prezzo aggiornato', `${webPriceProduct.name}: nuovo prezzo ${formatEuro(newPrice)}`);
+      addToast('success', 'Prodotto aggiornato', `"${newName}": nome e prezzo (${formatEuro(newPrice)}) salvati.`);
       setWebPriceProduct(null);
+      setInputWebProductName('');
       setInputWebPrice('');
       await fetchData();
 
-      // Sincronizza anche i prezzi delle righe in preparazione
+      // Sincronizza anche i prezzi e i nomi delle righe in preparazione
       setScaricoItems((prev) =>
         prev.map((item) =>
-          String(item.productId) === String(targetId) ? { ...item, unitPrice: newPrice } : item
+          String(item.productId) === String(targetId)
+            ? { ...item, productName: newName, unitPrice: newPrice }
+            : item
         )
       );
       setCaricoItems((prev) =>
         prev.map((item) =>
-          String(item.productId) === String(targetId) ? { ...item, unitPrice: newPrice } : item
+          String(item.productId) === String(targetId)
+            ? { ...item, productName: newName, unitPrice: newPrice }
+            : item
         )
       );
       if (caricoSelectedProductId && String(caricoSelectedProductId) === String(targetId)) {
@@ -470,18 +699,19 @@ export default function Home() {
   const handleSaveEditProduct = async () => {
     if (!editingProduct) return;
     const targetId = editingProduct.id;
+    const newName = editName.trim() || editingProduct.name;
 
     setIsSaving(true);
     const { error } = await supabase
       .from('products')
-      .update({ stock: editStock, unit_price: editPrice, supplier: editSupplier })
+      .update({ name: newName, stock: editStock, unit_price: editPrice, supplier: editSupplier })
       .eq('id', targetId);
     setIsSaving(false);
 
     if (error) {
       addToast('error', 'Errore durante la modifica', error.message);
     } else {
-      addToast('success', 'Prodotto aggiornato', `Dati di "${editingProduct.name}" salvati con successo.`);
+      addToast('success', 'Prodotto aggiornato', `Dati di "${newName}" salvati con successo.`);
       setEditingProduct(null);
       await fetchData();
       if (targetId) {
@@ -1211,6 +1441,7 @@ export default function Home() {
                               <button
                                 onClick={() => {
                                   setEditingProduct(p);
+                                  setEditName(p.name);
                                   setEditStock(p.stock);
                                   setEditPrice(p.unit_price || 0);
                                   setEditSupplier(p.supplier || '');
@@ -1317,19 +1548,14 @@ export default function Home() {
 
                   <div className="grid grid-cols-12 gap-3 items-end">
                     <div className="col-span-6">
-                      <label className="block text-[11px] font-semibold text-slate-600 mb-1">Seleziona Articolo</label>
-                      <select
-                        value={caricoSelectedProductId}
-                        onChange={(e) => handleCaricoProductSelect(e.target.value)}
-                        className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 font-medium"
-                      >
-                        <option value="">-- Seleziona un articolo dalla bolla --</option>
-                        {products.map((p) => (
-                          <option key={p.id} value={p.id}>
-                            {p.name} (Giacenza attuale: {p.stock} pz)
-                          </option>
-                        ))}
-                      </select>
+                      <label className="block text-[11px] font-semibold text-slate-600 mb-1">Cerca e Seleziona Articolo</label>
+                      <ProductSearchCombobox
+                        products={products}
+                        selectedProductId={caricoSelectedProductId}
+                        onSelect={(prodId) => handleCaricoProductSelect(prodId)}
+                        placeholder="Digita per affinare il nome del prodotto..."
+                        theme="emerald"
+                      />
                     </div>
 
                     <div className="col-span-2">
@@ -1623,19 +1849,14 @@ export default function Home() {
 
                   <div className="grid grid-cols-12 gap-3 items-end">
                     <div className="col-span-5">
-                      <label className="block text-[11px] font-semibold text-slate-600 mb-1">Seleziona Articolo</label>
-                      <select
-                        value={scaricoSelectedProductId}
-                        onChange={(e) => setScaricoSelectedProductId(e.target.value)}
-                        className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 font-medium"
-                      >
-                        <option value="">-- Seleziona un articolo da prelevare --</option>
-                        {products.map((p) => (
-                          <option key={p.id} value={p.id}>
-                            {p.name} (Giacenza: {p.stock} pz{p.unit_price ? ` | ${formatEuro(p.unit_price)}` : ''})
-                          </option>
-                        ))}
-                      </select>
+                      <label className="block text-[11px] font-semibold text-slate-600 mb-1">Cerca e Seleziona Articolo</label>
+                      <ProductSearchCombobox
+                        products={products}
+                        selectedProductId={scaricoSelectedProductId}
+                        onSelect={(prodId) => setScaricoSelectedProductId(prodId)}
+                        placeholder="Digita per affinare il nome del prodotto..."
+                        theme="rose"
+                      />
                     </div>
 
                     <div className="col-span-2">
@@ -2132,7 +2353,7 @@ export default function Home() {
         )}
       </main>
 
-      {/* ===================== MODALE: PREZZO WEB ===================== */}
+      {/* ===================== MODALE: PREZZO WEB E NOME PRODOTTO ===================== */}
       {webPriceProduct && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-xs">
           <div className="bg-white rounded-2xl shadow-xl border border-slate-200 max-w-md w-full p-6 animate-in zoom-in-95 duration-150">
@@ -2143,7 +2364,7 @@ export default function Home() {
                     <path strokeLinecap="round" strokeLinejoin="round" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9-9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9" />
                   </svg>
                 </div>
-                <h3 className="text-base font-bold text-slate-900">Aggiorna Prezzo Web</h3>
+                <h3 className="text-base font-bold text-slate-900">Verifica Prodotto & Prezzo Web</h3>
               </div>
               <button
                 onClick={() => setWebPriceProduct(null)}
@@ -2156,23 +2377,47 @@ export default function Home() {
             </div>
 
             <p className="text-xs text-slate-500 mb-4 leading-relaxed">
-              Hai consultato il prezzo sul web. Inserisci il prezzo medio unitario rilevato per:
-              <strong className="block text-slate-900 mt-1 font-semibold">{webPriceProduct.name}</strong>
+              Consulta il web per individuare il nome commerciale originale o il prezzo medio unitario. Puoi correggere il nome di comodità e aggiornare il prezzo rilevato.
             </p>
 
-            <div className="mb-5">
-              <label className="block text-xs font-semibold text-slate-700 mb-1.5">Nuovo Prezzo Unitario (€):</label>
-              <div className="relative">
-                <span className="absolute inset-y-0 left-0 pl-3.5 flex items-center text-slate-400 text-sm">€</span>
+            <div className="space-y-4 mb-5">
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="block text-xs font-semibold text-slate-700">Nome Articolo (Modificabile):</label>
+                  <button
+                    type="button"
+                    onClick={handleReSearchWebPrice}
+                    className="inline-flex items-center gap-1 text-[11px] font-bold text-blue-600 hover:text-blue-800 cursor-pointer"
+                    title="Cerca nuovamente su Google con il testo inserito"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9-9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9" />
+                    </svg>
+                    🌐 Cerca su Google
+                  </button>
+                </div>
                 <input
                   type="text"
-                  autoFocus
-                  placeholder="es. 3.50"
-                  value={inputWebPrice}
-                  onChange={(e) => setInputWebPrice(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter') handleSaveWebPrice(); }}
-                  className="w-full pl-8 pr-3 py-2.5 text-sm bg-white border border-slate-300 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 font-medium"
+                  value={inputWebProductName}
+                  onChange={(e) => setInputWebProductName(e.target.value)}
+                  placeholder="Nome originale o corretto del prodotto"
+                  className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 font-medium"
                 />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1.5">Prezzo Medio Unitario (€):</label>
+                <div className="relative">
+                  <span className="absolute inset-y-0 left-0 pl-3.5 flex items-center text-slate-400 text-sm">€</span>
+                  <input
+                    type="text"
+                    placeholder="es. 3.50"
+                    value={inputWebPrice}
+                    onChange={(e) => setInputWebPrice(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') handleSaveWebPrice(); }}
+                    className="w-full pl-8 pr-3 py-2 text-xs bg-white border border-slate-300 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 font-medium"
+                  />
+                </div>
               </div>
             </div>
 
@@ -2188,7 +2433,7 @@ export default function Home() {
                 disabled={isSaving}
                 className="px-4 py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors cursor-pointer shadow-xs"
               >
-                {isSaving ? 'Salvataggio...' : 'Salva Prezzo'}
+                {isSaving ? 'Salvataggio...' : 'Salva Nome e Prezzo'}
               </button>
             </div>
           </div>
@@ -2218,9 +2463,28 @@ export default function Home() {
               </button>
             </div>
 
-            <p className="text-xs font-semibold text-blue-700 bg-blue-50/70 p-2.5 rounded-lg border border-blue-100 mb-4">
-              {editingProduct.name}
-            </p>
+            <div className="mb-4">
+              <div className="flex items-center justify-between mb-1">
+                <label className="block text-xs font-semibold text-slate-700">Nome Prodotto:</label>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const query = encodeURIComponent(`prezzo ${editName.replace(/\(.*?\)/g, '').trim()}`);
+                    window.open(`https://www.google.com/search?tbm=shop&q=${query}`, '_blank', 'noopener,noreferrer');
+                  }}
+                  className="inline-flex items-center gap-1 text-[11px] font-bold text-blue-600 hover:text-blue-800 cursor-pointer"
+                  title="Cerca questo nome sul web"
+                >
+                  🌐 Cerca Web
+                </button>
+              </div>
+              <input
+                type="text"
+                value={editName}
+                onChange={(e) => setEditName(e.target.value)}
+                className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 font-semibold text-slate-900"
+              />
+            </div>
 
             <div className="space-y-3.5 mb-5">
               <div>
