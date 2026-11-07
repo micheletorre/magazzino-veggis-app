@@ -26,7 +26,7 @@ interface Toast {
 
 interface BatchItem {
   tempId: string;
-  productId: string;
+  productId: string | number;
   productName: string;
   quantity: number;
   unitPrice: number;
@@ -157,7 +157,7 @@ export default function Home() {
   // Pre-carica prezzo quando si seleziona un prodotto per il Carico
   const handleCaricoProductSelect = (prodId: string) => {
     setCaricoSelectedProductId(prodId);
-    const prod = products.find((p) => p.id === prodId);
+    const prod = products.find((p) => String(p.id) === String(prodId));
     if (prod) {
       setCaricoUnitPrice(Number(prod.unit_price) || 0);
       if (!caricoSupplier && prod.supplier) {
@@ -177,11 +177,14 @@ export default function Home() {
       return;
     }
 
-    const prod = products.find((p) => p.id === caricoSelectedProductId);
-    if (!prod) return;
+    const prod = products.find((p) => String(p.id) === String(caricoSelectedProductId));
+    if (!prod) {
+      addToast('error', 'Articolo non trovato', 'Seleziona un articolo valido');
+      return;
+    }
 
     // Se il prodotto è già in lista, aggiorniamo la quantità
-    const existingIndex = caricoItems.findIndex((item) => item.productId === prod.id);
+    const existingIndex = caricoItems.findIndex((item) => String(item.productId) === String(prod.id));
     if (existingIndex >= 0) {
       const updated = [...caricoItems];
       updated[existingIndex].quantity += caricoQuantity;
@@ -237,7 +240,7 @@ export default function Home() {
 
       // 2. Aggiorna giacenza, ultimo carico e fornitore di ogni prodotto
       for (const item of caricoItems) {
-        const prod = products.find((p) => p.id === item.productId);
+        const prod = products.find((p) => String(p.id) === String(item.productId));
         const currentStock = prod ? prod.stock : item.currentStock;
         const newStock = currentStock + item.quantity;
 
@@ -289,12 +292,15 @@ export default function Home() {
       return;
     }
 
-    const prod = products.find((p) => p.id === scaricoSelectedProductId);
-    if (!prod) return;
+    const prod = products.find((p) => String(p.id) === String(scaricoSelectedProductId));
+    if (!prod) {
+      addToast('error', 'Articolo non trovato', 'Seleziona un articolo valido dalla lista');
+      return;
+    }
 
     // Calcola quanto di questo articolo è già in coda di scarico
     const alreadyQueued = scaricoItems
-      .filter((i) => i.productId === prod.id)
+      .filter((i) => String(i.productId) === String(prod.id))
       .reduce((sum, i) => sum + i.quantity, 0);
 
     const totalRequested = alreadyQueued + scaricoQuantity;
@@ -307,7 +313,7 @@ export default function Home() {
       return;
     }
 
-    const existingIndex = scaricoItems.findIndex((item) => item.productId === prod.id);
+    const existingIndex = scaricoItems.findIndex((item) => String(item.productId) === String(prod.id));
     if (existingIndex >= 0) {
       const updated = [...scaricoItems];
       updated[existingIndex].quantity += scaricoQuantity;
@@ -355,7 +361,7 @@ export default function Home() {
 
       // Aggiorna giacenze
       for (const item of scaricoItems) {
-        const prod = products.find((p) => p.id === item.productId);
+        const prod = products.find((p) => String(p.id) === String(item.productId));
         const currentStock = prod ? prod.stock : item.currentStock;
         const newStock = Math.max(0, currentStock - item.quantity);
 
@@ -950,7 +956,7 @@ export default function Home() {
                           id={`product-row-${p.id}`}
                           key={p.id}
                           className={`transition-all duration-500 ${
-                            highlightedProductId === p.id
+                            highlightedProductId && String(highlightedProductId) === String(p.id)
                               ? 'bg-blue-100/90 ring-2 ring-blue-500 ring-inset shadow-md'
                               : isZero
                               ? 'bg-rose-50/25 hover:bg-slate-50/80'
@@ -1309,8 +1315,8 @@ export default function Home() {
                       </tr>
                     ) : (
                       movements.filter((m) => m.type === 'CARICO').map((m) => {
-                        const prod = products.find((p) => p.id === m.product_id);
-                        const unitP = m.unit_price || 0;
+                        const prod = products.find((p) => String(p.id) === String(m.product_id));
+                        const unitP = prod?.unit_price || m.unit_price || 0;
                         return (
                           <tr key={m.id} className="hover:bg-slate-50/80 transition-colors">
                             <td className="py-3 px-5 font-medium text-slate-600">
@@ -1577,7 +1583,7 @@ export default function Home() {
                       </tr>
                     ) : (
                       movements.filter((m) => m.type === 'SCARICO').map((m) => {
-                        const prod = products.find((p) => p.id === m.product_id);
+                        const prod = products.find((p) => String(p.id) === String(m.product_id));
                         return (
                           <tr key={m.id} className="hover:bg-slate-50/80 transition-colors">
                             <td className="py-3 px-5 font-medium text-slate-600">
