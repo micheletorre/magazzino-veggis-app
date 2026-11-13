@@ -455,44 +455,59 @@ export default function Home() {
 
     setIsSaving(true);
     try {
-      const fullSupplierName = caricoReference.trim()
-        ? `${caricoSupplier.trim()} (DDT: ${caricoReference.trim()})`
-        : caricoSupplier.trim();
+      // Tentativo 1: Chiamata atomica sicura tramite Stored Procedure PostgreSQL (ACID)
+      const { error: rpcError } = await supabase.rpc('record_warehouse_carico', {
+        p_items: caricoItems.map((item) => ({
+          productId: Number(item.productId),
+          quantity: item.quantity,
+          unitPrice: item.unitPrice,
+        })),
+        p_date: caricoDate,
+        p_supplier: caricoSupplier.trim(),
+        p_reference: caricoReference.trim() || null,
+      });
 
-      // 1. Prepara i movimenti da inserire
-      const movementsToInsert = caricoItems.map((item) => ({
-        product_id: item.productId,
-        type: 'CARICO',
-        quantity: item.quantity,
-        movement_date: caricoDate,
-        supplier: fullSupplierName || null,
-      }));
+      if (rpcError) {
+        // Fallback: se la funzione RPC non è ancora registrata sul DB, esegue il flusso standard
+        console.warn('RPC record_warehouse_carico non attiva, fallback locale:', rpcError);
 
-      const { error: movError } = await supabase.from('movements').insert(movementsToInsert);
-      if (movError) throw movError;
+        const fullSupplierName = caricoReference.trim()
+          ? `${caricoSupplier.trim()} (DDT: ${caricoReference.trim()})`
+          : caricoSupplier.trim();
 
-      // 2. Aggiorna giacenza, ultimo carico e fornitore di ogni prodotto
-      for (const item of caricoItems) {
-        const prod = products.find((p) => String(p.id) === String(item.productId));
-        const currentStock = prod ? prod.stock : item.currentStock;
-        const newStock = currentStock + item.quantity;
+        const movementsToInsert = caricoItems.map((item) => ({
+          product_id: item.productId,
+          type: 'CARICO',
+          quantity: item.quantity,
+          movement_date: caricoDate,
+          supplier: fullSupplierName || null,
+        }));
 
-        const updatePayload: Partial<Product> = {
-          stock: newStock,
-          last_charge_date: caricoDate,
-          unit_price: item.unitPrice > 0 ? item.unitPrice : prod?.unit_price,
-        };
-        if (caricoSupplier.trim()) {
-          updatePayload.supplier = caricoSupplier.trim();
-        }
+        const { error: movError } = await supabase.from('movements').insert(movementsToInsert);
+        if (movError) throw movError;
 
-        const { error: prodError } = await supabase
-          .from('products')
-          .update(updatePayload)
-          .eq('id', item.productId);
+        for (const item of caricoItems) {
+          const prod = products.find((p) => String(p.id) === String(item.productId));
+          const currentStock = prod ? prod.stock : item.currentStock;
+          const newStock = currentStock + item.quantity;
 
-        if (prodError) {
-          console.error(`Errore aggiornamento prodotto ${item.productId}:`, prodError);
+          const updatePayload: Partial<Product> = {
+            stock: newStock,
+            last_charge_date: caricoDate,
+            unit_price: item.unitPrice > 0 ? item.unitPrice : prod?.unit_price,
+          };
+          if (caricoSupplier.trim()) {
+            updatePayload.supplier = caricoSupplier.trim();
+          }
+
+          const { error: prodError } = await supabase
+            .from('products')
+            .update(updatePayload)
+            .eq('id', item.productId);
+
+          if (prodError) {
+            console.error(`Errore aggiornamento prodotto ${item.productId}:`, prodError);
+          }
         }
       }
 
@@ -571,31 +586,52 @@ export default function Home() {
 
     setIsSaving(true);
     try {
-      const movementsToInsert = scaricoItems.map((item) => ({
-        product_id: item.productId,
-        type: 'SCARICO',
-        quantity: item.quantity,
-        movement_date: scaricoDate,
-        requester: scaricoRequester.trim().toUpperCase() || null,
-        destination: scaricoDestination.trim().toUpperCase() || null,
-      }));
+      // Tentativo 1: Chiamata atomica sicura tramite Stored Procedure PostgreSQL (ACID)
+      const { error: rpcError } = await supabase.rpc('record_warehouse_scarico', {
+        p_items: scaricoItems.map((item) => ({
+          productId: Number(item.productId),
+          quantity: item.quantity,
+        })),
+        p_date: scaricoDate,
+        p_requester: scaricoRequester.trim().toUpperCase() || null,
+        p_destination: scaricoDestination.trim().toUpperCase() || null,
+      });
 
-      const { error: movError } = await supabase.from('movements').insert(movementsToInsert);
-      if (movError) throw movError;
+      if (rpcError) {
+        // Se la procedura solleva eccezione (es. giacenza insufficiente), controlliamo se è un errore di business logic
+        if (rpcError.message && rpcError.message.includes('Giacenza insufficiente')) {
+          throw new Error(rpcError.message);
+        }
 
-      // Aggiorna giacenze
-      for (const item of scaricoItems) {
-        const prod = products.find((p) => String(p.id) === String(item.productId));
-        const currentStock = prod ? prod.stock : item.currentStock;
-        const newStock = currentStock - item.quantity;
+        // Fallback: se la funzione RPC non è ancora registrata sul DB, esegue il flusso standard
+        console.warn('RPC record_warehouse_scarico non attiva, fallback locale:', rpcError);
 
-        const { error: prodError } = await supabase
-          .from('products')
-          .update({ stock: newStock })
-          .eq('id', item.productId);
+        const movementsToInsert = scaricoItems.map((item) => ({
+          product_id: item.productId,
+          type: 'SCARICO',
+          quantity: item.quantity,
+          movement_date: scaricoDate,
+          requester: scaricoRequester.trim().toUpperCase() || null,
+          destination: scaricoDestination.trim().toUpperCase() || null,
+        }));
 
-        if (prodError) {
-          console.error(`Errore aggiornamento stock prodotto ${item.productId}:`, prodError);
+        const { error: movError } = await supabase.from('movements').insert(movementsToInsert);
+        if (movError) throw movError;
+
+        // Aggiorna giacenze
+        for (const item of scaricoItems) {
+          const prod = products.find((p) => String(p.id) === String(item.productId));
+          const currentStock = prod ? prod.stock : item.currentStock;
+          const newStock = currentStock - item.quantity;
+
+          const { error: prodError } = await supabase
+            .from('products')
+            .update({ stock: newStock })
+            .eq('id', item.productId);
+
+          if (prodError) {
+            console.error(`Errore aggiornamento stock prodotto ${item.productId}:`, prodError);
+          }
         }
       }
 
