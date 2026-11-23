@@ -316,6 +316,23 @@ export default function Home() {
   // Modale Conferma Eliminazione
   const [productToDelete, setProductToDelete] = useState<Product | null>(null);
 
+  // Modale Modifica Singolo Scarico
+  const [editingScaricoMovement, setEditingScaricoMovement] = useState<Movement | null>(null);
+  const [editScaricoProductId, setEditScaricoProductId] = useState<string>('');
+  const [editScaricoQuantity, setEditScaricoQuantity] = useState<number>(1);
+  const [editScaricoDate, setEditScaricoDate] = useState<string>('');
+  const [editScaricoRequester, setEditScaricoRequester] = useState<string>('');
+  const [editScaricoDestination, setEditScaricoDestination] = useState<string>('');
+
+  // Modale Modifica Dati Richiesta (Gruppo di scarico)
+  const [editingScaricoGroup, setEditingScaricoGroup] = useState<ScaricoGroup | null>(null);
+  const [editGroupDate, setEditGroupDate] = useState<string>('');
+  const [editGroupRequester, setEditGroupRequester] = useState<string>('');
+  const [editGroupDestination, setEditGroupDestination] = useState<string>('');
+
+  // Modale Conferma Eliminazione Scarico
+  const [scaricoToDelete, setScaricoToDelete] = useState<Movement | null>(null);
+
   // Evidenziazione e auto-scroll al prodotto modificato
   const [highlightedProductId, setHighlightedProductId] = useState<string | number | null>(null);
 
@@ -362,6 +379,9 @@ export default function Home() {
         setWebPriceProduct(null);
         setEditingProduct(null);
         setProductToDelete(null);
+        setEditingScaricoMovement(null);
+        setEditingScaricoGroup(null);
+        setScaricoToDelete(null);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -653,6 +673,154 @@ export default function Home() {
     } catch (err: any) {
       console.error(err);
       addToast('error', 'Errore durante la registrazione dello scarico', err.message);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  // ================= GESTIONE MODIFICA ED ELIMINAZIONE SCARICO ESISTENTE =================
+  const handleOpenEditScarico = (movement: Movement) => {
+    setEditingScaricoMovement(movement);
+    setEditScaricoProductId(String(movement.product_id || ''));
+    setEditScaricoQuantity(movement.quantity || 1);
+    setEditScaricoDate(movement.movement_date || new Date().toISOString().split('T')[0]);
+    setEditScaricoRequester((movement.requester || '').toUpperCase());
+    setEditScaricoDestination((movement.destination || '').toUpperCase());
+  };
+
+  const handleOpenEditGroup = (group: ScaricoGroup) => {
+    setEditingScaricoGroup(group);
+    setEditGroupDate(group.date !== 'Senza data' ? group.date : new Date().toISOString().split('T')[0]);
+    setEditGroupRequester((group.requester || '').toUpperCase());
+    setEditGroupDestination((group.destination || '').toUpperCase());
+  };
+
+  const handleSaveEditScarico = async () => {
+    if (!editingScaricoMovement) return;
+    if (!editScaricoProductId) {
+      addToast('error', 'Seleziona articolo', 'Seleziona un prodotto valido per lo scarico');
+      return;
+    }
+    if (editScaricoQuantity <= 0) {
+      addToast('error', 'Quantità non valida', 'La quantità deve essere di almeno 1 pezzo');
+      return;
+    }
+
+    const oldProductId = String(editingScaricoMovement.product_id);
+    const newProductId = String(editScaricoProductId);
+    const oldQty = editingScaricoMovement.quantity || 0;
+    const newQty = editScaricoQuantity;
+
+    setIsSaving(true);
+    try {
+      // 1. Aggiorna il movimento su Supabase
+      const { error: movError } = await supabase
+        .from('movements')
+        .update({
+          product_id: Number(newProductId),
+          quantity: newQty,
+          movement_date: editScaricoDate,
+          requester: editScaricoRequester.trim().toUpperCase() || null,
+          destination: editScaricoDestination.trim().toUpperCase() || null,
+        })
+        .eq('id', editingScaricoMovement.id);
+
+      if (movError) throw movError;
+
+      // 2. Ricalcola le giacenze di magazzino
+      if (oldProductId === newProductId) {
+        const diff = newQty - oldQty;
+        if (diff !== 0) {
+          const prod = products.find((p) => String(p.id) === newProductId);
+          if (prod) {
+            const updatedStock = (prod.stock || 0) - diff;
+            await supabase.from('products').update({ stock: updatedStock }).eq('id', prod.id);
+          }
+        }
+      } else {
+        const oldProd = products.find((p) => String(p.id) === oldProductId);
+        if (oldProd) {
+          const restoredStock = (oldProd.stock || 0) + oldQty;
+          await supabase.from('products').update({ stock: restoredStock }).eq('id', oldProd.id);
+        }
+        const newProd = products.find((p) => String(p.id) === newProductId);
+        if (newProd) {
+          const newStock = (newProd.stock || 0) - newQty;
+          await supabase.from('products').update({ stock: newStock }).eq('id', newProd.id);
+        }
+      }
+
+      addToast('success', 'Scarico aggiornato', 'Movimento e giacenze di magazzino aggiornati con successo.');
+      setEditingScaricoMovement(null);
+      await fetchData();
+    } catch (err: any) {
+      console.error('Errore aggiornamento scarico:', err);
+      addToast('error', 'Errore salvataggio', err.message || 'Impossibile aggiornare lo scarico');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleConfirmDeleteScarico = async () => {
+    if (!scaricoToDelete) return;
+
+    setIsSaving(true);
+    try {
+      // 1. Ripristina la quantità nella giacenza del prodotto
+      const prod = products.find((p) => String(p.id) === String(scaricoToDelete.product_id));
+      if (prod) {
+        const restoredStock = (prod.stock || 0) + (scaricoToDelete.quantity || 0);
+        const { error: stockErr } = await supabase.from('products').update({ stock: restoredStock }).eq('id', prod.id);
+        if (stockErr) console.warn('Errore ripristino giacenza:', stockErr);
+      }
+
+      // 2. Elimina il movimento da Supabase
+      const { error: delErr } = await supabase.from('movements').delete().eq('id', scaricoToDelete.id);
+      if (delErr) throw delErr;
+
+      addToast('success', 'Scarico eliminato', 'Il movimento è stato eliminato e la giacenza è stata ripristinata.');
+      const deletedId = scaricoToDelete.id;
+      setScaricoToDelete(null);
+      if (editingScaricoMovement && editingScaricoMovement.id === deletedId) {
+        setEditingScaricoMovement(null);
+      }
+      await fetchData();
+    } catch (err: any) {
+      console.error('Errore eliminazione scarico:', err);
+      addToast('error', 'Errore eliminazione', err.message || 'Impossibile eliminare lo scarico');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleSaveEditGroup = async () => {
+    if (!editingScaricoGroup) return;
+
+    const movIds = editingScaricoGroup.items.map((i) => i.movement.id).filter(Boolean);
+    if (movIds.length === 0) {
+      setEditingScaricoGroup(null);
+      return;
+    }
+
+    setIsSaving(true);
+    try {
+      const { error } = await supabase
+        .from('movements')
+        .update({
+          movement_date: editGroupDate,
+          requester: editGroupRequester.trim().toUpperCase() || null,
+          destination: editGroupDestination.trim().toUpperCase() || null,
+        })
+        .in('id', movIds);
+
+      if (error) throw error;
+
+      addToast('success', 'Richiesta aggiornata', `Aggiornati dati di consegna per ${movIds.length} articoli.`);
+      setEditingScaricoGroup(null);
+      await fetchData();
+    } catch (err: any) {
+      console.error('Errore modifica gruppo scarico:', err);
+      addToast('error', 'Errore salvataggio', err.message || 'Impossibile aggiornare i dati della richiesta');
     } finally {
       setIsSaving(false);
     }
@@ -2234,7 +2402,7 @@ export default function Home() {
                             </div>
 
                             {/* Totali e indicatore freccia */}
-                            <div className="flex items-center gap-4">
+                            <div className="flex items-center gap-3">
                               <div className="text-right">
                                 <div className="text-xs font-bold text-slate-900">
                                   {group.items.length} {group.items.length === 1 ? 'articolo' : 'articoli'} ({group.totalQuantity} pz)
@@ -2243,6 +2411,21 @@ export default function Home() {
                                   Valore Totale: {formatEuro(group.totalValue)}
                                 </div>
                               </div>
+
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleOpenEditGroup(group);
+                                }}
+                                title="Modifica data, richiedente e destinazione per tutti gli articoli di questo scarico"
+                                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold text-slate-700 bg-white hover:bg-slate-100 border border-slate-300 shadow-2xs transition-colors cursor-pointer whitespace-nowrap"
+                              >
+                                <svg className="w-3.5 h-3.5 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                  <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                                </svg>
+                                Modifica Richiesta
+                              </button>
 
                               <div className="w-7 h-7 rounded-lg bg-white border border-slate-200 text-slate-500 flex items-center justify-center transition-transform">
                                 <svg
@@ -2269,6 +2452,7 @@ export default function Home() {
                                     <th className="py-2.5 px-3 text-right">Prezzo Unitario</th>
                                     <th className="py-2.5 px-4 text-right">Totale Riga</th>
                                     <th className="py-2.5 px-3 text-center">Prezzo Web</th>
+                                    <th className="py-2.5 px-4 text-right">Azioni</th>
                                   </tr>
                                 </thead>
                                 <tbody className="divide-y divide-slate-100">
@@ -2306,6 +2490,37 @@ export default function Home() {
                                             </button>
                                           )}
                                         </td>
+                                        <td className="py-2.5 px-4 text-right">
+                                          <div className="flex items-center justify-end gap-1.5 whitespace-nowrap">
+                                            <button
+                                              type="button"
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                handleOpenEditScarico(item.movement);
+                                              }}
+                                              title="Modifica questo articolo scaricato"
+                                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 transition-colors cursor-pointer"
+                                            >
+                                              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                                <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                                              </svg>
+                                              Modifica
+                                            </button>
+                                            <button
+                                              type="button"
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                setScaricoToDelete(item.movement);
+                                              }}
+                                              title="Elimina questo scarico e ripristina la giacenza"
+                                              className="p-1 rounded-md text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
+                                            >
+                                              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                                <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                              </svg>
+                                            </button>
+                                          </div>
+                                        </td>
                                       </tr>
                                     );
                                   })}
@@ -2331,12 +2546,13 @@ export default function Home() {
                         <th className="py-3 px-4 text-right">Totale Uscita</th>
                         <th className="py-3 px-5">Richiedente</th>
                         <th className="py-3 px-5">Destinazione / Reparto</th>
+                        <th className="py-3 px-4 text-right">Azioni</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 text-xs">
                       {filteredFlatScarichi.length === 0 ? (
                         <tr>
-                          <td colSpan={7} className="py-10 text-center text-slate-400">
+                          <td colSpan={8} className="py-10 text-center text-slate-400">
                             {scaricoHistorySearch
                               ? `Nessuno scarico corrisponde a "${scaricoHistorySearch}".`
                               : 'Nessuno scarico registrato nello storico.'}
@@ -2376,6 +2592,31 @@ export default function Home() {
                                     {m.destination}
                                   </span>
                                 ) : '-'}
+                              </td>
+                              <td className="py-3 px-4 text-right">
+                                <div className="flex items-center justify-end gap-1.5 whitespace-nowrap">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleOpenEditScarico(m)}
+                                    title="Modifica questo scarico"
+                                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 transition-colors cursor-pointer"
+                                  >
+                                    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                      <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                                    </svg>
+                                    Modifica
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setScaricoToDelete(m)}
+                                    title="Elimina scarico e ripristina la giacenza"
+                                    className="p-1.5 rounded-md text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
+                                  >
+                                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                      <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                    </svg>
+                                  </button>
+                                </div>
                               </td>
                             </tr>
                           );
@@ -2734,6 +2975,319 @@ export default function Home() {
           </div>
         </div>
       )}
+
+      {/* ===================== MODALE: MODIFICA SINGOLO SCARICO ===================== */}
+      {editingScaricoMovement && (() => {
+        const originalProd = products.find((p) => String(p.id) === String(editingScaricoMovement.product_id));
+        const currentProd = products.find((p) => String(p.id) === String(editScaricoProductId));
+        const isSameProd = String(editingScaricoMovement.product_id) === String(editScaricoProductId);
+        const oldQty = editingScaricoMovement.quantity || 0;
+        const newQty = editScaricoQuantity;
+        const currentUnitPrice = currentProd?.unit_price || editingScaricoMovement.unit_price || 0;
+        const estimatedTotal = newQty * currentUnitPrice;
+
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-xs">
+            <div className="bg-white rounded-2xl shadow-xl border border-slate-200 max-w-lg w-full p-6 animate-in zoom-in-95 duration-150 max-h-[90vh] overflow-y-auto">
+              <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-4">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-lg bg-rose-50 text-rose-600 flex items-center justify-center">
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                    </svg>
+                  </div>
+                  <div>
+                    <h3 className="text-base font-bold text-slate-900">Modifica Scarico Merce</h3>
+                    <p className="text-[11px] text-slate-500">ID Movimento #{editingScaricoMovement.id}</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setEditingScaricoMovement(null)}
+                  className="text-slate-400 hover:text-slate-600 p-1 rounded-lg"
+                >
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+
+              <div className="space-y-4 mb-6">
+                {/* Selezione Articolo */}
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Articolo Scaricato:
+                  </label>
+                  <ProductSearchCombobox
+                    products={products}
+                    selectedProductId={editScaricoProductId}
+                    onSelect={(id) => setEditScaricoProductId(id)}
+                    theme="rose"
+                    placeholder="Digita nome o fornitore..."
+                  />
+                  {!isSameProd && originalProd && (
+                    <div className="mt-1.5 p-2 rounded-lg bg-amber-50 border border-amber-200 text-[11px] text-amber-800 flex items-start gap-1.5">
+                      <span className="font-bold">Nota:</span>
+                      <span>
+                        Hai cambiato articolo da <strong className="uppercase">{originalProd.name}</strong> a <strong className="uppercase">{currentProd?.name}</strong>. La giacenza del vecchio articolo verrà ripristinata (+{oldQty} pz).
+                      </span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Quantità e Valore */}
+                <div className="grid grid-cols-2 gap-3 items-start">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      Quantità Scaricata (Pezzi):
+                    </label>
+                    <input
+                      type="number"
+                      min="1"
+                      value={editScaricoQuantity}
+                      onChange={(e) => setEditScaricoQuantity(Math.max(1, parseInt(e.target.value) || 1))}
+                      className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 font-bold"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      Valore Uscita Stimato:
+                    </label>
+                    <div className="px-3 py-2 rounded-lg bg-slate-50 border border-slate-200 text-sm font-bold text-slate-900">
+                      {formatEuro(estimatedTotal)}
+                      <span className="text-[10px] text-slate-500 font-normal ml-1">
+                        ({formatEuro(currentUnitPrice)} / pz)
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Box impatto su scorte */}
+                {currentProd && (
+                  <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-600 space-y-1">
+                    <div className="flex justify-between items-center">
+                      <span>Giacenza attuale a magazzino:</span>
+                      <strong className="text-slate-900">{currentProd.stock} pz</strong>
+                    </div>
+                    {isSameProd ? (
+                      <div className="flex justify-between items-center">
+                        <span>Giacenza post-modifica:</span>
+                        <strong className={`${(currentProd.stock - (newQty - oldQty)) < 0 ? 'text-rose-600' : 'text-emerald-700'} font-bold`}>
+                          {currentProd.stock - (newQty - oldQty)} pz
+                          <span className="text-[10px] font-normal text-slate-500 ml-1">
+                            ({newQty - oldQty > 0 ? `-${newQty - oldQty} pz addizionali` : newQty - oldQty < 0 ? `+${oldQty - newQty} pz riaccreditati` : 'nessuna variazione'})
+                          </span>
+                        </strong>
+                      </div>
+                    ) : (
+                      <div className="flex justify-between items-center">
+                        <span>Giacenza post-modifica per {currentProd.name}:</span>
+                        <strong className={`${(currentProd.stock - newQty) < 0 ? 'text-rose-600' : 'text-emerald-700'} font-bold`}>
+                          {currentProd.stock - newQty} pz
+                        </strong>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Data Prelievo */}
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Data Prelievo:</label>
+                  <input
+                    type="date"
+                    value={editScaricoDate}
+                    onChange={(e) => setEditScaricoDate(e.target.value)}
+                    className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500"
+                  />
+                </div>
+
+                {/* Richiedente */}
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Richiedente / Operatore:</label>
+                  <input
+                    type="text"
+                    placeholder="ES. MARIO ROSSI, AMMINISTRAZIONE..."
+                    value={editScaricoRequester}
+                    onChange={(e) => setEditScaricoRequester(e.target.value.toUpperCase())}
+                    className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 uppercase"
+                  />
+                </div>
+
+                {/* Destinazione */}
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Destinazione / Reparto / Stanza:</label>
+                  <input
+                    type="text"
+                    placeholder="ES. SCALA A, UFFICIO 3, PIANO TERRA..."
+                    value={editScaricoDestination}
+                    onChange={(e) => setEditScaricoDestination(e.target.value.toUpperCase())}
+                    className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 uppercase"
+                  />
+                </div>
+              </div>
+
+              {/* Bottoni footer */}
+              <div className="flex items-center justify-between pt-3 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setScaricoToDelete(editingScaricoMovement)}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 rounded-lg border border-rose-200 transition-colors cursor-pointer"
+                >
+                  <svg className="w-4 h-4 text-rose-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                  </svg>
+                  Elimina Scarico
+                </button>
+
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setEditingScaricoMovement(null)}
+                    className="px-3.5 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
+                  >
+                    Annulla
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleSaveEditScarico}
+                    disabled={isSaving}
+                    className="px-4 py-2 text-xs font-semibold text-white bg-rose-600 hover:bg-rose-700 rounded-lg transition-colors cursor-pointer shadow-xs"
+                  >
+                    {isSaving ? 'Salvataggio...' : 'Salva Modifiche'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ===================== MODALE: MODIFICA DATI RICHIESTA (GRUPPO) ===================== */}
+      {editingScaricoGroup && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-xs">
+          <div className="bg-white rounded-2xl shadow-xl border border-slate-200 max-w-md w-full p-6 animate-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-4">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-lg bg-rose-50 text-rose-600 flex items-center justify-center">
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                  </svg>
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-slate-900">Modifica Dati Richiesta</h3>
+                  <p className="text-[11px] text-slate-500">
+                    Modifica per tutti i {editingScaricoGroup.items.length} articoli della consegna
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingScaricoGroup(null)}
+                className="text-slate-400 hover:text-slate-600 p-1 rounded-lg"
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="space-y-3.5 mb-6">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Data Prelievo:</label>
+                <input
+                  type="date"
+                  value={editGroupDate}
+                  onChange={(e) => setEditGroupDate(e.target.value)}
+                  className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Richiedente / Operatore:</label>
+                <input
+                  type="text"
+                  placeholder="ES. MARIO ROSSI, AMMINISTRAZIONE..."
+                  value={editGroupRequester}
+                  onChange={(e) => setEditGroupRequester(e.target.value.toUpperCase())}
+                  className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 uppercase font-medium"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Destinazione / Reparto / Stanza:</label>
+                <input
+                  type="text"
+                  placeholder="ES. SCALA A, UFFICIO 3, PIANO TERRA..."
+                  value={editGroupDestination}
+                  onChange={(e) => setEditGroupDestination(e.target.value.toUpperCase())}
+                  className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 uppercase"
+                />
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2.5 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setEditingScaricoGroup(null)}
+                className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
+              >
+                Annulla
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveEditGroup}
+                disabled={isSaving}
+                className="px-5 py-2 text-xs font-semibold text-white bg-rose-600 hover:bg-rose-700 rounded-lg transition-colors cursor-pointer shadow-xs"
+              >
+                {isSaving ? 'Salvataggio...' : 'Aggiorna Richiesta'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ===================== MODALE: CONFERMA ELIMINAZIONE SCARICO ===================== */}
+      {scaricoToDelete && (() => {
+        const prod = products.find((p) => String(p.id) === String(scaricoToDelete.product_id));
+        return (
+          <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-xs">
+            <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 max-w-sm w-full p-6 animate-in zoom-in-95 duration-150">
+              <div className="w-12 h-12 rounded-xl bg-rose-100 text-rose-600 flex items-center justify-center mb-4">
+                <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                </svg>
+              </div>
+
+              <h3 className="text-base font-bold text-slate-900">Elimina scarico merce?</h3>
+              <p className="text-xs text-slate-600 mt-2 leading-relaxed">
+                Stai per cancellare lo scarico di <strong className="text-slate-900">{scaricoToDelete.quantity} pz</strong> di <strong className="text-slate-900 uppercase">{prod?.name || 'Articolo'}</strong> del {formatDateToItalian(scaricoToDelete.movement_date)}.
+              </p>
+              <div className="mt-3 p-2.5 rounded-lg bg-emerald-50 border border-emerald-200 text-[11px] text-emerald-800">
+                ✓ La quantità ({scaricoToDelete.quantity} pz) verrà <strong>automaticamente riaccreditata</strong> nella giacenza del magazzino.
+              </div>
+
+              <div className="flex justify-end gap-2.5 mt-6">
+                <button
+                  type="button"
+                  onClick={() => setScaricoToDelete(null)}
+                  className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
+                >
+                  Annulla
+                </button>
+                <button
+                  type="button"
+                  onClick={handleConfirmDeleteScarico}
+                  disabled={isSaving}
+                  className="px-4 py-2 text-xs font-semibold text-white bg-rose-600 hover:bg-rose-700 rounded-lg transition-colors cursor-pointer shadow-xs"
+                >
+                  {isSaving ? 'Eliminazione...' : 'Sì, elimina e ripristina'}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
